@@ -4,6 +4,7 @@ import SwiftUI
 
 struct EditorArea: View {
     let workspace: WorkspaceModel
+    var showsSidebarToggle = true
 
     @AppStorage("terminalHeight") private var terminalHeight: Double = 260
     @State private var dragStartTerminalHeight: Double?
@@ -16,7 +17,7 @@ struct EditorArea: View {
             HStack(spacing: 8) {
                 if !workspace.isSidebarVisible {
                     Color.clear.frame(width: WorkspaceLayout.trafficLightsWidth)
-                    SidebarToggleButton(workspace: workspace)
+                    if showsSidebarToggle { SidebarToggleButton(workspace: workspace) }
                 }
                 EditorTabBar(workspace: workspace)
                 Spacer(minLength: 0)

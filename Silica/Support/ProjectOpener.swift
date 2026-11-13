@@ -7,8 +7,8 @@ struct ProjectOpener {
 
     private var store: RecentProjectsStore { .shared }
 
-    /// The Open panel: a folder opens as a project; files open in the project they
-    /// belong to (see `ExternalOpener`).
+    /// The Open panel: folders open as projects; files use an open project or a
+    /// standalone editor window (see `ExternalOpener`).
     func chooseAndOpen() {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true

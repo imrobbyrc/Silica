@@ -3,6 +3,7 @@ import SwiftUI
 enum WindowID {
     static let welcome = "welcome"
     static let workspace = "workspace"
+    static let file = "file"
     static let settings = "settings"
 }
 
@@ -43,6 +44,18 @@ struct SilicaApp: App {
             WorkspaceWindow(projectID: projectID)
         }
         .defaultSize(width: 1180, height: 760)
+        .windowStyle(.hiddenTitleBar)
+        .windowBackgroundDragBehavior(.enabled)
+        .handlesExternalEvents(matching: [])
+        .commands {
+            TextEditingCommands()
+            AppCommands()
+        }
+
+        WindowGroup("File", id: WindowID.file, for: URL.self) { $fileURL in
+            StandaloneFileWindow(fileURL: fileURL)
+        }
+        .defaultSize(width: 980, height: 700)
         .windowStyle(.hiddenTitleBar)
         .windowBackgroundDragBehavior(.enabled)
         .handlesExternalEvents(matching: [])

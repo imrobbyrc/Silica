@@ -11,8 +11,6 @@ struct WorkspaceWindow: View {
     @State private var workspace: WorkspaceModel?
     @State private var errorMessage: String?
 
-    @MainActor private static var openCount = 0
-
     var body: some View {
         Group {
             if let workspace {
@@ -35,7 +33,7 @@ struct WorkspaceWindow: View {
         }
         .onAppear {
             ExternalOpener.shared.openWindow = openWindow
-            Self.openCount += 1
+            EditorWindowPresence.didOpen()
             dismissWindow(id: WindowID.welcome)
             load()
         }
@@ -45,8 +43,7 @@ struct WorkspaceWindow: View {
             }
             if let workspace { ExternalOpener.shared.workspaceDidClose(workspace) }
             workspace?.close()
-            Self.openCount -= 1
-            if Self.openCount == 0 {
+            if EditorWindowPresence.didClose() {
                 openWindow(id: WindowID.welcome)
             }
         }
@@ -63,7 +60,7 @@ struct WorkspaceWindow: View {
             let url = try RecentProjectsStore.shared.resolveURL(for: projectID)
             let workspace = WorkspaceModel(rootURL: url)
             self.workspace = workspace
-            ExternalOpener.shared.workspaceDidOpen(workspace, projectID: projectID)
+            ExternalOpener.shared.workspaceDidOpen(workspace)
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -86,20 +83,34 @@ enum WorkspaceLayout {
     static let minimumEditorHeight: CGFloat = 120
 }
 
+@MainActor
+enum EditorWindowPresence {
+    private static var openCount = 0
+
+    static func didOpen() { openCount += 1 }
+
+    static func didClose() -> Bool {
+        openCount -= 1
+        return openCount == 0
+    }
+}
+
 struct WorkspaceView: View {
     @Bindable var workspace: WorkspaceModel
+    var showsSidebar = true
+    var windowTitle: String? = nil
     @AppStorage("sidebarWidth") private var sidebarWidth: Double = 260
     @State private var dragStartWidth: Double?
 
     var body: some View {
         HStack(spacing: 0) {
-            if workspace.isSidebarVisible {
+            if showsSidebar && workspace.isSidebarVisible {
                 FileTreeView(workspace: workspace)
                     .frame(width: min(max(sidebarWidth, WorkspaceLayout.sidebarWidthRange.lowerBound), WorkspaceLayout.sidebarWidthRange.upperBound))
                     .overlay(alignment: .trailing) { resizeHandle }
                     .transition(.move(edge: .leading).combined(with: .opacity))
             }
-            EditorArea(workspace: workspace)
+            EditorArea(workspace: workspace, showsSidebarToggle: showsSidebar)
         }
         .ignoresSafeArea(.container, edges: .top)
         .overlay {
@@ -111,7 +122,7 @@ struct WorkspaceView: View {
         .containerBackground(for: .window) {
             VisualEffectView()
         }
-        .navigationTitle(workspace.name)
+        .navigationTitle(windowTitle ?? workspace.name)
         .background(KeyWindowTracker(workspace: workspace))
         .background(UnsavedChangesGuard(workspace: workspace, hasUnsavedChanges: workspace.hasUnsavedChanges))
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in

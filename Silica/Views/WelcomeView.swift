@@ -144,7 +144,7 @@ struct WelcomeView: View {
         _ = provider.loadObject(ofClass: URL.self) { url, _ in
             guard let url else { return }
             Task { @MainActor in
-                // A folder opens as a project; a file in the project it belongs to.
+                // Folders open as projects; files use an open project or a standalone window.
                 ExternalOpener.shared.open([url])
             }
         }

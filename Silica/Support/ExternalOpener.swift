@@ -4,9 +4,8 @@ import SwiftUI
 /// Opens what's handed to Silica from outside the project tree: Finder's Open With,
 /// files dropped on the Dock icon or the welcome window, the Open panel, `open -a`.
 ///
-/// A folder opens as a project. A file opens as a tab in the open project that
-/// contains it; otherwise in a window for the recent project or git repository it
-/// belongs to, or else for the folder it's in.
+/// A folder opens as a project. A file opens in its containing open project, or
+/// as a standalone editor window when no open project contains it.
 final class ExternalOpener {
     static let shared = ExternalOpener()
     private init() {}
@@ -28,8 +27,6 @@ final class ExternalOpener {
 
     /// Requests that came in before any window could open others (at launch).
     private var queued: [URL] = []
-    /// Files to open once their project's window has loaded.
-    private var pendingFiles: [RecentProject.ID: [URL]] = [:]
     private var workspaces: [WeakWorkspace] = []
 
     private struct WeakWorkspace {
@@ -43,14 +40,11 @@ final class ExternalOpener {
 
     // MARK: Project windows
 
-    /// Called by a project window once its workspace has loaded; opens the files
-    /// that were waiting for it.
-    func workspaceDidOpen(_ workspace: WorkspaceModel, projectID: RecentProject.ID) {
+    /// Called by a project window once its workspace has loaded, so external
+    /// files inside it open as tabs in that workspace.
+    func workspaceDidOpen(_ workspace: WorkspaceModel) {
         workspaces.removeAll { $0.workspace == nil }
         workspaces.append(WeakWorkspace(workspace: workspace))
-        for url in pendingFiles.removeValue(forKey: projectID) ?? [] {
-            open(url, in: workspace)
-        }
     }
 
     func workspaceDidClose(_ workspace: WorkspaceModel) {
@@ -79,13 +73,7 @@ final class ExternalOpener {
             workspace.window?.makeKeyAndOrderFront(nil)
             return
         }
-        do {
-            let project = try RecentProjectsStore.shared.register(Self.projectFolder(for: url))
-            pendingFiles[project.id, default: []].append(url)
-            openWindow(id: WindowID.workspace, value: project.id)
-        } catch {
-            NSAlert(error: error).runModal()
-        }
+        openWindow(id: WindowID.file, value: url)
     }
 
     /// Opens `url` as a tab, spelled the way the project spells its own files
@@ -107,10 +95,9 @@ final class ExternalOpener {
             .max { Self.components($0.rootURL).count < Self.components($1.rootURL).count }
     }
 
-    /// The folder to open a project window on for a file no open project contains:
-    /// the deepest recent project above it, else the nearest git repository below
-    /// the home folder, else the file's own folder.
-    private static func projectFolder(for url: URL) -> URL {
+    /// Context root for a standalone file: the deepest recent project above it,
+    /// else the nearest git repository below the home folder, else its own folder.
+    static func projectFolder(for url: URL) -> URL {
         let recent = RecentProjectsStore.shared.projects
             .map { URL(filePath: $0.path, directoryHint: .isDirectory) }
             .filter { relativeComponents(of: url, in: $0) != nil }

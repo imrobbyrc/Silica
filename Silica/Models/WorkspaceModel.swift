@@ -52,6 +52,9 @@ final class WorkspaceModel {
     /// The project's window, to bring forward when a file is opened in it from outside.
     @ObservationIgnored weak var window: NSWindow?
     @ObservationIgnored private var isAccessingScope: Bool
+    @ObservationIgnored private let standaloneFileURL: URL?
+    @ObservationIgnored private var isAccessingStandaloneFile: Bool
+    @ObservationIgnored private let persistsSession: Bool
     @ObservationIgnored private var watcher: ProjectWatcher?
     @ObservationIgnored private var terminationObserver: NSObjectProtocol?
     @ObservationIgnored private var isRestoringSession = false
@@ -72,9 +75,12 @@ final class WorkspaceModel {
         buffers.values.contains { $0.needsSaving }
     }
 
-    init(rootURL: URL) {
+    init(rootURL: URL, standaloneFileURL: URL? = nil) {
         self.rootURL = rootURL
         self.isAccessingScope = rootURL.startAccessingSecurityScopedResource()
+        self.standaloneFileURL = standaloneFileURL
+        self.isAccessingStandaloneFile = standaloneFileURL?.startAccessingSecurityScopedResource() ?? false
+        self.persistsSession = standaloneFileURL == nil
         self.root = FileNode(root: rootURL)
         self.quickOpen = QuickOpenModel(rootURL: rootURL)
         self.search = ProjectSearchModel(rootURL: rootURL)
@@ -93,7 +99,12 @@ final class WorkspaceModel {
             self?.refresh()
         }
         lsp = LanguageServerCoordinator(rootURL: rootURL)
-        restoreSession()
+        if let standaloneFileURL {
+            isSidebarVisible = false
+            open(standaloneFileURL)
+        } else {
+            restoreSession()
+        }
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
@@ -116,6 +127,10 @@ final class WorkspaceModel {
         terminal = nil
         lsp?.shutdown()
         lsp = nil
+        if isAccessingStandaloneFile, let standaloneFileURL {
+            standaloneFileURL.stopAccessingSecurityScopedResource()
+            isAccessingStandaloneFile = false
+        }
         if isAccessingScope {
             rootURL.stopAccessingSecurityScopedResource()
             isAccessingScope = false
@@ -928,6 +943,7 @@ final class WorkspaceModel {
 
     /// Remembers the open tabs; called on changes (batched), on close and on quit.
     func saveSession() {
+        guard persistsSession else { return }
         sessionSaveTask?.cancel()
         sessionSaveTask = nil
         // Untitled tabs have nothing on disk to reopen.
@@ -949,7 +965,7 @@ final class WorkspaceModel {
     }
 
     private func scheduleSessionSave() {
-        guard !isRestoringSession else { return }
+        guard persistsSession, !isRestoringSession else { return }
         sessionSaveTask?.cancel()
         sessionSaveTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
