@@ -319,7 +319,7 @@ final class WorkspaceModel {
                   buffer.textController?.textView.string == text else { return }
             switch outcome {
             case .definition(let target):
-                navigate(toDefinition: target)
+                navigate(toDefinition: target, from: buffer)
             case .unavailable(let message):
                 showAlert(
                     "No \(language?.displayName ?? "") language server",
@@ -333,12 +333,16 @@ final class WorkspaceModel {
         }
     }
 
-    /// Opens the definition in an adjacent tab (reusing its tab if already open)
-    /// and reveals its range. The range is resolved against the file's current
-    /// text — possibly unsaved in another tab — and clamped if it has drifted.
-    private func navigate(toDefinition target: LSPDefinitionTarget) {
-        let targetText = buffers[target.url]?.textController?.textView.string
-            ?? (try? String(contentsOf: target.url, encoding: .utf8))
+    /// Reveals same-file definitions in their source buffer; other files open in
+    /// an adjacent tab (reusing an existing tab). Range resolves against current
+    /// text, including unsaved edits, and is clamped if it has drifted.
+    private func navigate(toDefinition target: LSPDefinitionTarget, from sourceBuffer: EditorBuffer) {
+        let destinationURL = target.navigationURL(from: sourceBuffer.url)
+        let sameFile = destinationURL == sourceBuffer.url
+        let targetText = sameFile
+            ? sourceBuffer.textController?.textView.string
+            : buffers[target.url]?.textController?.textView.string
+                ?? (try? String(contentsOf: target.url, encoding: .utf8))
         let range: NSRange
         if let targetText {
             range = LSPPositionMapper.nsRange(of: target.range, in: targetText as NSString)
@@ -346,7 +350,7 @@ final class WorkspaceModel {
         } else {
             range = NSRange(location: 0, length: 0)
         }
-        openSearchMatch(target.url, range: range)
+        openSearchMatch(destinationURL, range: range)
     }
 
     // MARK: Quick Open

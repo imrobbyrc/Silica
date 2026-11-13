@@ -21,6 +21,12 @@ struct LSPDefinitionTarget {
     let url: URL
     /// Zero-based line/UTF-16 range to reveal in the target file.
     let range: Range<Position>
+
+    func navigationURL(from sourceURL: URL) -> URL {
+        let target = url.resolvingSymlinksInPath().standardizedFileURL
+        let source = sourceURL.resolvingSymlinksInPath().standardizedFileURL
+        return target == source ? sourceURL : url
+    }
 }
 
 /// The language servers of one project: starts one server per needed language,

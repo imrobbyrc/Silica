@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LanguageServerProtocol
 
 #if DEBUG
 /// End-to-end proof that Silica's LSP client works: drives the real
@@ -125,6 +126,21 @@ enum LSPSelfTest {
             try diskPeerText.write(to: peerURL, atomically: false, encoding: .utf8)
         } catch {
             print("LSP SELFTEST: FAIL: could not write fixtures: \(error)")
+            return 1
+        }
+        let targetAliasURL = root.appending(component: "target-alias.txt")
+        do {
+            try fileManager.createSymbolicLink(at: targetAliasURL, withDestinationURL: targetURL)
+        } catch {
+            print("LSP SELFTEST: FAIL: could not create same-file alias: \(error)")
+            return 1
+        }
+        let targetRange = Position(line: 0, utf16index: 0)..<Position(line: 0, utf16index: 1)
+        guard LSPDefinitionTarget(url: targetAliasURL, range: targetRange)
+                .navigationURL(from: targetURL) == targetURL,
+              LSPDefinitionTarget(url: sourceURL, range: targetRange)
+                .navigationURL(from: targetURL) == sourceURL else {
+            print("LSP SELFTEST: FAIL: definition navigation did not reuse same-file URL")
             return 1
         }
 
