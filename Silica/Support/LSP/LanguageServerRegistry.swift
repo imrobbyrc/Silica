@@ -152,14 +152,19 @@ enum LanguageServerRegistry {
         return nil
     }
 
+    /// The workspace-root `.venv` interpreter Silica puts first on Pyright's PATH.
+    static func pythonInterpreter(for workspaceURL: URL) -> URL? {
+        let interpreter = workspaceURL.appending(path: ".venv/bin/python")
+        return FileManager.default.isExecutableFile(atPath: interpreter.path) ? interpreter : nil
+    }
+
     /// Prefers a project-local uv/venv environment for Python so Pyright resolves
     /// imports from the project's installed dependencies without project config.
     /// shortcut: only a workspace-root `.venv` is auto-selected; add interpreter discovery for other layouts.
     static func environmentPath(for language: SyntaxLanguage, workspaceURL: URL, loginPath: String) -> String {
-        guard language == .python else { return loginPath }
-        let binURL = workspaceURL.appending(path: ".venv/bin", directoryHint: .isDirectory)
-        let interpreterURL = binURL.appending(component: "python")
-        guard FileManager.default.isExecutableFile(atPath: interpreterURL.path) else { return loginPath }
+        guard language == .python,
+              let interpreter = pythonInterpreter(for: workspaceURL) else { return loginPath }
+        let binURL = interpreter.deletingLastPathComponent()
         var components = loginPath.split(separator: ":").map(String.init)
         components.removeAll { $0 == binURL.path }
         components.insert(binURL.path, at: 0)

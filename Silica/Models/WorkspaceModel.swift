@@ -333,9 +333,9 @@ final class WorkspaceModel {
         }
     }
 
-    /// Opens the definition's file and reveals its range. The range is resolved
-    /// against the file's current text — possibly unsaved in another tab — and
-    /// clamped if the file has drifted since the server indexed it.
+    /// Opens the definition in an adjacent tab (reusing its tab if already open)
+    /// and reveals its range. The range is resolved against the file's current
+    /// text — possibly unsaved in another tab — and clamped if it has drifted.
     private func navigate(toDefinition target: LSPDefinitionTarget) {
         let targetText = buffers[target.url]?.textController?.textView.string
             ?? (try? String(contentsOf: target.url, encoding: .utf8))
@@ -550,6 +550,7 @@ final class WorkspaceModel {
             buffers[url] = makeBuffer(for: url)
         }
         if !openTabs.contains(url) {
+            // Keep the source tab and place newly opened targets beside it.
             if let active = activeTab, let index = openTabs.firstIndex(of: active) {
                 openTabs.insert(url, at: index + 1)
             } else {

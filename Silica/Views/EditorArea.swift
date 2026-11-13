@@ -679,6 +679,7 @@ private struct BufferView: View {
 private struct StatusBar: View {
     let buffer: EditorBuffer
     let workspace: WorkspaceModel
+    @State private var isHoveringPython = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -690,7 +691,7 @@ private struct StatusBar: View {
             Text(buffer.indentation.usesTabs ? "Tabs" : "Spaces: \(buffer.indentation.width)")
             Text(buffer.encodingName)
             Text(buffer.lineEndingName)
-            Text(buffer.language?.displayName ?? "Plain Text")
+            languageLabel
         }
         .font(.caption)
         .monospacedDigit()
@@ -700,6 +701,51 @@ private struct StatusBar: View {
         .padding(.vertical, 4)
         .glassEffect(.regular, in: .capsule)
         .fixedSize()
+    }
+
+    @ViewBuilder
+    private var languageLabel: some View {
+        let name = buffer.language?.displayName ?? "Plain Text"
+        if buffer.language == .python {
+            Text(name)
+                .contentShape(.rect)
+                .accessibilityHint(pythonEnvironmentDescription)
+                .onHover { hovering in
+                    withAnimation(.easeOut(duration: 0.12)) { isHoveringPython = hovering }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if isHoveringPython {
+                        pythonEnvironmentCard
+                            .offset(y: -8)
+                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            .allowsHitTesting(false)
+                            .zIndex(1)
+                    }
+                }
+        } else {
+            Text(name)
+        }
+    }
+
+    private var pythonEnvironmentCard: some View {
+        Text(pythonEnvironmentDescription)
+            .font(.caption.monospaced())
+            .fixedSize()
+            .padding(10)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .strokeBorder(.quaternary, lineWidth: 1)
+            }
+            .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+    }
+
+    private var pythonEnvironmentDescription: String {
+        guard let interpreter = LanguageServerRegistry.pythonInterpreter(for: workspace.rootURL) else {
+            return "Pyright Python environment: no workspace .venv/bin/python detected; using Pyright's configured/default environment."
+        }
+        let environment = interpreter.deletingLastPathComponent().deletingLastPathComponent()
+        return "Pyright Python environment:\n\(environment.path)\nInterpreter: \(interpreter.path)"
     }
 
     private var position: String {

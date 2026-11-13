@@ -47,6 +47,11 @@ enum LSPSelfTest {
             print("LSP SELFTEST: FAIL: could not prepare test Python environment: \(error)")
             return 1
         }
+        guard LanguageServerRegistry.pythonInterpreter(for: pythonProject) == pythonExecutable,
+              LanguageServerRegistry.pythonInterpreter(for: root) == nil else {
+            print("LSP SELFTEST: FAIL: Python environment tooltip did not match interpreter detection")
+            return 1
+        }
         let loginPath = "/usr/bin:/bin"
         let pythonPath = LanguageServerRegistry.environmentPath(
             for: .python,
