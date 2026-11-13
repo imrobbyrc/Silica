@@ -38,7 +38,12 @@ final class TextController: NSObject, NSTextViewDelegate {
         textView.importsGraphics = false
         textView.allowsUndo = true
         textView.usesFindBar = true
-        textView.isIncrementalSearchingEnabled = true
+        // No `isIncrementalSearchingEnabled`: in incremental mode the find bar finds
+        // matches (the count badge fills in) but never applies them — on this OS neither
+        // Return nor the bar's next/previous buttons move the selection, so ⌘F shows no
+        // highlight (proven with an instrumented harness; affects TextKit 1 and 2).
+        // With it off, the first Return selects the first match and further Returns
+        // cycle through matches; the trade-off is no live match-count badge.
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
