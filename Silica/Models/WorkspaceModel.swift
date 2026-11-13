@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import os
 import SwiftUI
 
 /// State for one open project window: the explorer tree and the open editor tabs.
@@ -55,6 +56,11 @@ final class WorkspaceModel {
     @ObservationIgnored private var terminationObserver: NSObjectProtocol?
     @ObservationIgnored private var isRestoringSession = false
     @ObservationIgnored private var sessionSaveTask: Task<Void, Never>?
+    /// The project's language servers, created lazily so a project that never
+    /// navigates never launches a server.
+    @ObservationIgnored private(set) var lsp: LanguageServerCoordinator?
+
+    private static let logger = Logger(subsystem: "app.silica", category: "workspace")
 
     var name: String { root.name }
 
@@ -86,6 +92,7 @@ final class WorkspaceModel {
         watcher = ProjectWatcher(url: rootURL) { [weak self] in
             self?.refresh()
         }
+        lsp = LanguageServerCoordinator(rootURL: rootURL)
         restoreSession()
         terminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
@@ -107,6 +114,8 @@ final class WorkspaceModel {
         for terminal in terminals { terminal.close() }
         terminals = []
         terminal = nil
+        lsp?.shutdown()
+        lsp = nil
         if isAccessingScope {
             rootURL.stopAccessingSecurityScopedResource()
             isAccessingScope = false
@@ -289,6 +298,57 @@ final class WorkspaceModel {
         }
     }
 
+    // MARK: Go to Definition
+
+    /// Go to Definition (⌘-click or F12): asks the file's language server for the
+    /// definition of the symbol at `offset` (default: the caret) and opens it.
+    /// Servers are started on demand; if none is installed for the language, a
+    /// dialog says so.
+    func goToDefinition(at offset: Int? = nil, in buffer: EditorBuffer? = nil) {
+        guard let buffer = buffer ?? activeBuffer,
+              let controller = buffer.textController,
+              !buffer.isUntitled else { return }
+        let cursor = offset ?? controller.cursorLocation
+        let text = controller.textView.string
+        let language = SyntaxLanguage(url: buffer.url)
+        let sourceURL = buffer.url
+        Task { [weak self, weak buffer] in
+            guard let self, let buffer, let lsp else { return }
+            let outcome = await lsp.definition(in: buffer, atUTF16Offset: cursor, currentText: text)
+            guard buffer.url == sourceURL, buffers[sourceURL] === buffer,
+                  buffer.textController?.textView.string == text else { return }
+            switch outcome {
+            case .definition(let target):
+                navigate(toDefinition: target)
+            case .unavailable(let message):
+                showAlert(
+                    "No \(language?.displayName ?? "") language server",
+                    info: message
+                )
+            case .noDefinition:
+                Self.logger.info("Go to Definition returned no result for \(sourceURL.path, privacy: .public)")
+            case .failed(let message):
+                Self.logger.error("Go to Definition failed: \(message, privacy: .public)")
+            }
+        }
+    }
+
+    /// Opens the definition's file and reveals its range. The range is resolved
+    /// against the file's current text — possibly unsaved in another tab — and
+    /// clamped if the file has drifted since the server indexed it.
+    private func navigate(toDefinition target: LSPDefinitionTarget) {
+        let targetText = buffers[target.url]?.textController?.textView.string
+            ?? (try? String(contentsOf: target.url, encoding: .utf8))
+        let range: NSRange
+        if let targetText {
+            range = LSPPositionMapper.nsRange(of: target.range, in: targetText as NSString)
+                ?? NSRange(location: 0, length: 0)
+        } else {
+            range = NSRange(location: 0, length: 0)
+        }
+        openSearchMatch(target.url, range: range)
+    }
+
     // MARK: Quick Open
 
     func toggleQuickOpen() {
@@ -455,6 +515,7 @@ final class WorkspaceModel {
         for url in openTabs {
             guard let buffer = buffers[url], buffer.syncWithDisk() else { continue }
             // An image or other non-text file changed: read it again.
+            lsp?.documentDidClose(url: url)
             buffers[url] = makeBuffer(for: url)
         }
     }
@@ -506,6 +567,26 @@ final class WorkspaceModel {
             self?.open(target)
             self?.reveal(target)
         }
+        if let controller = buffer.textController {
+            // Tell the language server about edits; debounced by the coordinator.
+            controller.textDidChangeHandler = { [weak self, weak buffer] in
+                guard let buffer else { return }
+                self?.lsp?.documentDidChange(buffer)
+            }
+            // ⌘-click goes to definition.
+            controller.textView.onCommandClick = { [weak self, weak buffer] offset in
+                guard let buffer else { return }
+                self?.goToDefinition(at: offset, in: buffer)
+            }
+            controller.textView.onCommandHover = { [weak self, weak buffer] in
+                guard let self, let buffer, !buffer.isUntitled,
+                      let language = SyntaxLanguage(url: buffer.url) else { return }
+                Task { await self.lsp?.prepare(language: language) }
+            }
+        }
+        // Announce the file to its language server (no-op for unmapped languages;
+        // Command-hover prewarms its server before the first definition click).
+        lsp?.documentDidOpen(buffer)
         return buffer
     }
 
@@ -574,6 +655,7 @@ final class WorkspaceModel {
 
         openTabs.remove(at: index)
         buffers[url] = nil
+        lsp?.documentDidClose(url: url)
 
         if activeTab == url {
             if openTabs.isEmpty {
@@ -748,9 +830,11 @@ final class WorkspaceModel {
         // A tab already open on the destination now shows stale text; drop it.
         if buffers[destination] != nil {
             openTabs.removeAll { $0 == destination }
+            lsp?.documentDidClose(url: destination)
             buffers[destination] = nil
         }
         buffers[source] = nil
+        lsp?.documentDidClose(url: source)
         buffers[destination] = makeBuffer(for: destination)
         if let index = openTabs.firstIndex(of: source) {
             openTabs[index] = destination
@@ -777,6 +861,9 @@ final class WorkspaceModel {
             buffers[url] = nil
             buffers[target] = buffer
             buffer.move(to: target)
+            // The server sees a rename as closing the old file and opening the new one.
+            lsp?.documentDidClose(url: url)
+            lsp?.documentDidOpen(buffer)
         }
         openTabs = openTabs.map { moved($0) ?? $0 }
         if let activeTab, let target = moved(activeTab) { self.activeTab = target }

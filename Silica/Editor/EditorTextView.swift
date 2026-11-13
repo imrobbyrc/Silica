@@ -48,15 +48,182 @@ final class EditorTextView: NSTextView {
     }
 
     override func didChangeText() {
+        setCommandHoverRange(nil)
         super.didChangeText()
         // Guides follow the text, so any edit can move them.
         setNeedsDisplay(visibleRect)
     }
 
+    // MARK: Command-click (go to definition)
+
+    /// Called with the clicked UTF-16 offset when the user ⌘-clicks; the workspace
+    /// wires this up to go-to-definition. When set, ⌘-clicks don't move the caret.
+    var onCommandClick: ((Int) -> Void)?
+    /// Starts the server in the background when the user hovers a linkable token.
+    var onCommandHover: (() -> Void)?
+    /// shortcut: `.function` syntax tokens can be unresolved calls; use semantic hover requests if false cues become a problem.
+    var commandLinkRangeAt: ((Int) -> NSRange?)?
+    private var commandHoverRange: NSRange?
+    private var commandTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let commandTrackingArea { removeTrackingArea(commandTrackingArea) }
+        let trackingArea = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .cursorUpdate, .activeInKeyWindow, .inVisibleRect],
+            owner: self
+        )
+        addTrackingArea(trackingArea)
+        commandTrackingArea = trackingArea
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        updateCommandHover(at: event.locationInWindow, modifiers: event.modifierFlags)
+        super.mouseMoved(with: event)
+    }
+
+    override func cursorUpdate(with event: NSEvent) {
+        super.cursorUpdate(with: event)
+        updateCommandHover(at: event.locationInWindow, modifiers: event.modifierFlags)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        updateCommandHover(at: event.locationInWindow, modifiers: event.modifierFlags)
+        super.mouseEntered(with: event)
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        setCommandHoverRange(nil)
+        NSCursor.arrow.set()
+        super.mouseExited(with: event)
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        updateCommandHover(at: event.locationInWindow, modifiers: event.modifierFlags)
+        super.flagsChanged(with: event)
+    }
+
+    private func updateCommandHover(at windowPoint: NSPoint, modifiers: NSEvent.ModifierFlags) {
+        let flags = modifiers.intersection(.deviceIndependentFlagsMask)
+        let range: NSRange?
+        if flags.contains(.command), let commandLinkRangeAt,
+           let offset = utf16Offset(atClick: convert(windowPoint, from: nil)) {
+            range = commandLinkRangeAt(offset)
+        } else {
+            range = nil
+        }
+        let wasHoveringLink = commandHoverRange != nil
+        setCommandHoverRange(range)
+        if !wasHoveringLink, range != nil { onCommandHover?() }
+        (range == nil ? NSCursor.iBeam : .pointingHand).set()
+    }
+
+    private func setCommandHoverRange(_ range: NSRange?) {
+        guard range != commandHoverRange else { return }
+        commandHoverRange = range
+        setNeedsDisplay(visibleRect)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers.contains(.command), let onCommandClick,
+           let offset = utf16Offset(atClick: convert(event.locationInWindow, from: nil)),
+           commandLinkRangeAt?(offset) != nil {
+            onCommandClick(offset)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    /// Maps a click (in view coordinates) to a text offset by hit-testing the
+    /// TextKit 2 layout: the paragraph's layout fragment, then the line within it,
+    /// then the character within that line.
+    private func utf16Offset(atClick point: NSPoint) -> Int? {
+        guard let layoutManager = textLayoutManager,
+              let contentManager = layoutManager.textContentManager else { return nil }
+        // Layout geometry is relative to the text container origin.
+        let layoutPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
+        guard let fragment = layoutManager.textLayoutFragment(for: layoutPoint) else { return nil }
+
+        // The line whose vertical band the click falls in — or, when the click
+        // lands between or after lines, the nearest one. Lines are positioned
+        // by their typographic bounds inside the fragment's frame.
+        var nearestLine: NSTextLineFragment?
+        var nearestTop: CGFloat = 0
+        var nearestDistance = CGFloat.greatestFiniteMagnitude
+        for line in fragment.textLineFragments {
+            let top = fragment.layoutFragmentFrame.minY + line.typographicBounds.minY
+            let maxY = top + line.typographicBounds.height
+            let distance = layoutPoint.y < top ? top - layoutPoint.y : (layoutPoint.y > maxY ? layoutPoint.y - maxY : 0)
+            if distance < nearestDistance {
+                nearestDistance = distance
+                nearestLine = line
+                nearestTop = top
+            }
+        }
+        guard let line = nearestLine, nearestDistance == 0 else { return nil }
+        let pointXInLine = layoutPoint.x - fragment.layoutFragmentFrame.minX
+        let lineStartX = line.locationForCharacter(at: 0).x
+        let lineEndX = line.locationForCharacter(at: line.characterRange.length).x
+        guard pointXInLine >= min(lineStartX, lineEndX),
+              pointXInLine <= max(lineStartX, lineEndX) else { return nil }
+
+        // `characterIndex(for:)` expects the point in the line's own space,
+        // clamped into the line's bounds.
+        let pointInLine = NSPoint(
+            x: pointXInLine,
+            y: min(max(layoutPoint.y - nearestTop, 0), line.typographicBounds.height)
+        )
+        let documentStart = layoutManager.documentRange.location
+        let fragmentOffset = contentManager.offset(from: documentStart, to: fragment.rangeInElement.location)
+        return fragmentOffset + line.characterRange.location + line.characterIndex(for: pointInLine)
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
+        if let commandHoverRange {
+            drawCommandHover(range: commandHoverRange, in: dirtyRect)
+        }
         if showsIndentGuides {
             drawIndentGuides(in: dirtyRect)
+        }
+    }
+
+    /// Draw the cue instead of mutating text storage, so hover never changes document attributes.
+    private func drawCommandHover(range: NSRange, in dirtyRect: NSRect) {
+        guard let layoutManager = textLayoutManager,
+              let contentManager = layoutManager.textContentManager,
+              range.length > 0,
+              NSMaxRange(range) <= (textStorage?.length ?? 0) else { return }
+        let documentStart = layoutManager.documentRange.location
+        guard let location = contentManager.location(documentStart, offsetBy: range.location),
+              let fragment = layoutManager.textLayoutFragment(for: location) else { return }
+        let fragmentOffset = contentManager.offset(from: documentStart, to: fragment.rangeInElement.location)
+        let scale = window?.backingScaleFactor ?? 2
+        NSColor.linkColor.setStroke()
+        for line in fragment.textLineFragments {
+            let lineRange = NSRange(
+                location: fragmentOffset + line.characterRange.location,
+                length: line.characterRange.length
+            )
+            let intersection = NSIntersectionRange(range, lineRange)
+            guard intersection.length > 0 else { continue }
+            let lineStart = intersection.location - lineRange.location
+            let lineEnd = NSMaxRange(intersection) - lineRange.location
+            let start = line.locationForCharacter(at: lineStart)
+            let end = line.locationForCharacter(at: lineEnd)
+            let x1 = textContainerOrigin.x + fragment.layoutFragmentFrame.minX + start.x
+            let x2 = textContainerOrigin.x + fragment.layoutFragmentFrame.minX + end.x
+            let y = textContainerOrigin.y + fragment.layoutFragmentFrame.minY
+                + line.typographicBounds.maxY - 1 / scale
+            let rect = NSRect(x: min(x1, x2), y: y, width: abs(x2 - x1), height: 1 / scale)
+            guard rect.intersects(dirtyRect) else { continue }
+            let path = NSBezierPath()
+            path.lineWidth = 1 / scale
+            path.move(to: NSPoint(x: x1, y: y))
+            path.line(to: NSPoint(x: x2, y: y))
+            path.stroke()
         }
     }
 

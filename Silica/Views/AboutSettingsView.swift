@@ -102,6 +102,13 @@ struct Acknowledgement: Identifiable {
 
     static let all: [Acknowledgement] = [
         Acknowledgement(
+            name: "swift-tools-protocols (LanguageServerProtocol)",
+            license: "Apache License 2.0 with Runtime Library Exception",
+            holder: "Apple Inc. and the Swift project authors",
+            website: URL(string: "https://github.com/swiftlang/swift-tools-protocols")!,
+            files: ["swift-tools-protocols-LICENSE"]
+        ),
+        Acknowledgement(
             name: "swift-markdown",
             license: "Apache License 2.0",
             holder: "Apple Inc. and the Swift project authors",

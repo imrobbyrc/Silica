@@ -79,6 +79,9 @@ final class TextController: NSObject, NSTextViewDelegate {
             highlighter = SyntaxHighlighter(textView: textView, language: language)
             highlighter?.highlightNow()
         }
+        textView.commandLinkRangeAt = { [weak self] offset in
+            self?.highlighter?.linkRange(at: offset)
+        }
         applyWrapping()
 
         NotificationCenter.default.addObserver(
@@ -372,6 +375,10 @@ final class TextController: NSObject, NSTextViewDelegate {
         scheduleStatusUpdate()
     }
 
+    /// Called after any text edit; the workspace wires this to push LSP change
+    /// notifications (which the coordinator debounces).
+    var textDidChangeHandler: (() -> Void)?
+
     func textDidChange(_ notification: Notification) {
         highlighter?.textDidChange()
         lineNumbers?.textDidChange()
@@ -379,6 +386,7 @@ final class TextController: NSObject, NSTextViewDelegate {
             buffer?.isDirty = true
         }
         scheduleStatusUpdate()
+        textDidChangeHandler?()
     }
 
     private var isReplacingText = false

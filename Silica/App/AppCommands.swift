@@ -209,6 +209,11 @@ struct AppCommands: Commands {
         CommandMenu("Editor") {
             let hasText = workspace?.activeBuffer?.textController != nil
 
+            // F12 (NSF12FunctionKey): Go to Definition. Also reachable via ⌘-click.
+            Button("Go to Definition") { workspace?.goToDefinition() }
+                .keyboardShortcut(KeyEquivalent(Character(UnicodeScalar(0xF70D)!)), modifiers: [])
+                .disabled(!hasText)
+
             Button("Go to Line…") { workspace?.showGoToLine() }
                 .keyboardShortcut("l")
                 .disabled(!hasText)

@@ -16,6 +16,13 @@ struct SilicaApp: App {
         KeyWorkspace.shared.installKeyboardShortcuts()
         // Starts Sparkle, which schedules the daily update check.
         _ = AppUpdater.shared
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["SILICA_LSP_SELFTEST"] == "1" {
+            // scripts/test-lsp-integration.sh: drives the coordinator end-to-end
+            // against a fake language server, then exits.
+            LSPSelfTest.run()
+        }
+        #endif
     }
 
     var body: some Scene {

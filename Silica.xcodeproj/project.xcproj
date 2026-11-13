@@ -26,6 +26,12 @@
     }, {
       "kind": "local",
       "path": "Vendor/GhosttyVt",
+    }, {
+      "kind": "remote",
+      "repository": "https://github.com/swiftlang/swift-tools-protocols.git",
+      "version": {
+        "revision": "4345e69c5572ec3d1f737fba90bca024b32da5cf",
+      }
     },
   ],
   "files": [
@@ -61,6 +67,14 @@
         }, {
           "package": "swift-markdown",
           "product-name": "Markdown",
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
+          "package": "swift-tools-protocols",
+          "product-name": "LanguageServerProtocol",
+          "build-phase": { "build-phase": "frameworks" },
+        }, {
+          "package": "swift-tools-protocols",
+          "product-name": "LanguageServerProtocolTransport",
           "build-phase": { "build-phase": "frameworks" },
         },
       ],
