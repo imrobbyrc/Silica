@@ -3,6 +3,31 @@
     <channel>
         <title>Silica</title>
         <item>
+            <title>0.6.0</title>
+            <pubDate>Mon, 16 Nov 2026 21:33:11 +0800</pubDate>
+            <link>https://github.com/dqhieu/Silica</link>
+            <sparkle:fullReleaseNotesLink>https://github.com/dqhieu/Silica/releases</sparkle:fullReleaseNotesLink>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[### What's new
+
+- **Runs on macOS 15.** Silica now needs macOS 15 or later, down from macOS 26. Liquid Glass came with macOS 26, so on earlier versions the cards, tabs and buttons are plain, with a border and a shadow.
+- **Syntax highlighting for Dart.** `.dart` files are highlighted, and so are `dart` code blocks in the Markdown preview. That makes 27 languages.
+- **Choose a translucent or opaque window.** **Background** in **Settings › General** is **Translucent**, a frosted blur of what's behind the window, or **Opaque**, the solid window color.
+- **Turn the glass effect off.** With **Glass effect** off in **Settings › General**, the cards, tabs and buttons sit on plain bordered cards instead of Liquid Glass.
+- **The Markdown preview fills its pane.** The text used to stop at a narrow column in the middle. It now runs the full width of the pane.
+- **A double-click in a preview selects a word.** In a Markdown or CSV preview it used to switch to the source and put the cursor on that line, which made it impossible to select a word there.
+- **Settings looks like other Mac settings windows.** It is rebuilt on the system's own sidebar and grouped lists, and on macOS 27 its pickers show as capsule tabs.
+
+If you already have Silica, it will offer this update on its own, or choose **Silica › Check for Updates…**.
+
+Found a bug or have an idea? Please [open an issue](https://github.com/dqhieu/Silica/issues).
+
+]]></description>
+            <enclosure url="https://github.com/dqhieu/Silica/releases/download/v0.6.0/Silica-0.6.0.dmg" length="9301574" type="application/octet-stream" sparkle:edSignature="j9WKebKdPQngOqF+R0EGEwiBGvdI6NkGUmM3y/DLt5qeBu6ISLK721n81U/kpggGZzksFkRkQkNl0DmbcjJaCg=="/>
+        </item>
+        <item>
             <title>0.5.0</title>
             <pubDate>Sun, 15 Nov 2026 13:52:28 +0800</pubDate>
             <link>https://github.com/dqhieu/Silica</link>

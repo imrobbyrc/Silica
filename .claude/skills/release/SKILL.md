@@ -7,7 +7,7 @@ description: Release a new version of Silica — write the release notes from th
 
 `scripts/release.sh <version> <notes-file>` does the whole release: bumps the
 version, archives, signs, notarizes the app and the DMG, tags, creates the GitHub
-release and adds it to `docs/appcast.xml`. Your part is the three things the
+release, adds it to `docs/appcast.xml` and points the Homebrew cask at the new DMG. Your part is the three things the
 script can't do: write good notes, run it without blocking, and check that what
 it published is really there. `RELEASING.md` has the one-time setup and the
 recovery steps; read it if a check fails or the script stops partway.
@@ -104,7 +104,15 @@ gh release view v<version> --json name,isDraft,url,assets
 
 # The committed feed has the new item
 grep -n "sparkle:shortVersionString" docs/appcast.xml | head -3
+
+# The Homebrew cask names the new version and the DMG's checksum
+gh api repos/dqhieu/homebrew-tap/contents/Casks/silica.rb -H "Accept: application/vnd.github.raw" | grep -E "^  (version|sha256)"
+shasum -a 256 build/release/<version>/Silica-<version>.dmg
 ```
+
+The cask step is the one step that warns instead of stopping the script, so look
+for `warning: couldn't update` in the output. If it's there, or the cask doesn't
+match, follow "If a release stops partway" in `RELEASING.md`.
 
 Then the live feed, which is what running copies read. GitHub Pages redeploys
 `docs/` within a minute or so of the push, so poll it rather than checking once:
@@ -124,6 +132,6 @@ rather than reporting the release as done.
 ## 5. Report
 
 Tell the user the release URL, the version and build number, what you verified
-(notarization, git, release asset, live feed), and the notes as published,
+(notarization, git, release asset, live feed, Homebrew cask), and the notes as published,
 including which commits you left out and why. Say plainly what you didn't check:
 normally that is installing the update through Sparkle on a running copy.

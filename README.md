@@ -9,10 +9,16 @@ and video open beside your code, all in a native SwiftUI and AppKit app.
 ## Download
 
 Get the latest DMG from [Releases](https://github.com/dqhieu/Silica/releases/latest),
-open it and drag Silica to Applications. Silica checks for updates once a day and
-installs them for you; you can turn that off in Settings › General.
+open it and drag Silica to Applications. Or install it with [Homebrew](https://brew.sh):
 
-Silica needs macOS 26 or later.
+```
+brew install --cask dqhieu/tap/silica
+```
+
+Silica checks for updates once a day and installs them for you; you can turn that
+off in Settings › General.
+
+Silica needs macOS 15 or later. The Liquid Glass look needs macOS 26; earlier versions get plain bordered cards.
 
 ## Features
 
@@ -27,16 +33,15 @@ Silica needs macOS 26 or later.
 - **Tabs.** Drag tabs to reorder them, step through them with ⌃Tab, and close one with
   a middle click. With more tabs than fit, a mouse wheel scrolls the tab bar.
   Right-click a tab to reveal its file in the explorer or in Finder, or to copy its path.
-- **Syntax highlighting** for 26 languages, including Swift, JavaScript, TypeScript,
-  Python, Go, Rust, C, C++, Java, Kotlin, HTML, CSS, JSON, YAML and Markdown. Diff and
+- **Syntax highlighting** for 27 languages, including Swift, JavaScript, TypeScript,
+  Python, Go, Rust, C, C++, Java, Kotlin, Dart, HTML, CSS, JSON, YAML and Markdown. Diff and
   patch files show added lines in green and removed lines in red.
 - **Nine color themes**, each with a light and a dark palette: Atom One, GitHub,
   Xcode, Solarized, Catppuccin, Gruvbox, Tokyo Night, Rosé Pine and Dracula.
 - **Your fonts.** Choose the editor's font and size, and set the sidebar's text size
   on its own, in Settings › Fonts & Colors.
 - **Markdown preview**, with highlighted code blocks.
-- **CSV preview.** See `.csv` and `.tsv` files as a table, and double-click a row to
-  edit it.
+- **CSV preview.** See `.csv` and `.tsv` files as a table.
 - **HTML preview.** `.html` files render as in a browser, with their styles, images
   and scripts, and with your unsaved changes.
 - **Images, PDFs and video.** Images, PDF files and videos open in their own tabs
@@ -92,6 +97,16 @@ You need Xcode 27 or later.
 
 Bug reports, ideas and pull requests are welcome. Read
 [CONTRIBUTING.md](CONTRIBUTING.md) before you start on a change.
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=dqhieu%2Fsilica&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=dqhieu/silica&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=dqhieu/silica&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=dqhieu/silica&type=date&legend=top-left" />
+ </picture>
+</a>
 
 ## License
 

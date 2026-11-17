@@ -22,7 +22,7 @@ struct WorkspaceWindow: View {
                     Text(errorMessage)
                 } actions: {
                     Button("Open Project…") { ProjectOpener(openWindow: openWindow).chooseAndOpen() }
-                        .buttonStyle(.glassProminent)
+                        .glassButtonStyle(prominent: true)
                 }
                 .frame(minWidth: 500, minHeight: 360)
             } else {
@@ -120,7 +120,7 @@ struct WorkspaceView: View {
         }
         .frame(minWidth: 640, minHeight: 400)
         .containerBackground(for: .window) {
-            VisualEffectView()
+            WindowBackgroundView()
         }
         .navigationTitle(windowTitle ?? workspace.name)
         .background(KeyWindowTracker(workspace: workspace))

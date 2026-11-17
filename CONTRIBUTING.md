@@ -23,7 +23,7 @@ out early.
 
 ## Setting up
 
-You need Xcode 27 or later. Silica runs on macOS 26 and later.
+You need Xcode 27 or later. Silica runs on macOS 15 and later.
 
 1. Fork the repository and clone your fork.
 2. Open `Silica.xcodeproj`.

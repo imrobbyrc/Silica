@@ -9,7 +9,7 @@ import WebKit
 /// A Markdown or CSV page is HTML from the format's renderer (`MarkdownHTMLRenderer`,
 /// `CSVHTMLRenderer`), styled to match the editor and drawn on a transparent
 /// background so the glass card shows through. Scripts in the document itself never
-/// run; Silica's own small script (scroll position, double-click) runs in a separate
+/// run; Silica's own small script (scroll position) runs in a separate
 /// script world. Relative images load from disk through the `silica-preview:` scheme,
 /// links to project files open in Silica, and web links open in the browser.
 ///
@@ -18,13 +18,11 @@ import WebKit
 /// WebKit's rules for local files apply, as in Safari: the page can load the images,
 /// styles and scripts around it, but its scripts can't read local files. The
 /// `silica-preview:` scheme, which serves any file, isn't used for it.
-final class DocumentPreview: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+final class DocumentPreview: NSObject, WKNavigationDelegate {
     let webView: PreviewWebView
 
     /// Opens another file in the project (a link to it was clicked).
     var onOpenFile: ((URL) -> Void)?
-    /// Double-click: edit the source at this 1-based line.
-    var onEditLine: ((Int) -> Void)?
     /// A character was typed; switch to the source and insert it.
     var onType: ((String) -> Void)?
 
@@ -81,8 +79,6 @@ final class DocumentPreview: NSObject, WKNavigationDelegate, WKScriptMessageHand
 
         // An HTML page keeps the web view's own background, and the keyboard, as in a browser.
         guard format != .html else { return }
-        // Through a weak proxy: the content controller retains its handlers.
-        configuration.userContentController.add(WeakScriptHandler(self), contentWorld: .defaultClient, name: "silica")
         webView.underPageBackgroundColor = .clear
         webView.setValue(false, forKey: "drawsBackground")
         webView.onType = { [weak self] characters in self?.onType?(characters) }
@@ -322,14 +318,6 @@ final class DocumentPreview: NSObject, WKNavigationDelegate, WKScriptMessageHand
         isStartingPage = false
     }
 
-    // MARK: WKScriptMessageHandler
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        if let line = message.body as? Int {
-            onEditLine?(line)
-        }
-    }
-
     // MARK: Page
 
     private static func encodedPath(_ path: String) -> String {
@@ -374,7 +362,7 @@ final class DocumentPreview: NSObject, WKNavigationDelegate, WKScriptMessageHand
           color: rgba(0, 0, 0, 0.86);
           -webkit-font-smoothing: antialiased;
         }
-        article { max-width: 860px; margin: 0 auto; padding: 24px 32px 48px; }
+        article { padding: 24px 32px 48px; }
         h1, h2, h3, h4, h5, h6 { line-height: 1.25; margin: 1.4em 0 0.6em; font-weight: 650; }
         h1 { font-size: 1.9em; } h2 { font-size: 1.45em; } h3 { font-size: 1.2em; }
         h1, h2 { padding-bottom: 0.3em; border-bottom: 1px solid rgba(128, 128, 128, 0.25); }
@@ -403,7 +391,7 @@ final class DocumentPreview: NSObject, WKNavigationDelegate, WKScriptMessageHand
         /* CSV: a table as wide as its columns. The page scrolls both ways, under a
            header row that stays at the top. Borders are drawn per cell, as collapsed
            ones don't move with a sticky row. */
-        .csv article { max-width: none; width: max-content; margin: 0; padding: 16px 20px 40px; }
+        .csv article { width: max-content; padding: 16px 20px 40px; }
         .csv table { display: table; overflow: visible; border-collapse: separate; border-spacing: 0; font-size: 0.92em; line-height: 1.45; }
         .csv th, .csv td { border-width: 0 1px 1px 0; padding: 5px 12px; vertical-align: top; }
         .csv th > div, .csv td > div { max-width: 32em; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
@@ -450,10 +438,6 @@ final class DocumentPreview: NSObject, WKNavigationDelegate, WKScriptMessageHand
         return 1;
       }
     };
-    document.addEventListener('dblclick', (event) => {
-      const block = event.target.closest('[data-line]');
-      window.webkit.messageHandlers.silica.postMessage(block ? +block.dataset.line : 1);
-    });
     """
 }
 
@@ -471,18 +455,6 @@ final class PreviewWebView: WKWebView {
         }
         // Space, arrows and page keys keep scrolling the preview.
         super.keyDown(with: event)
-    }
-}
-
-private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
-    weak var target: WKScriptMessageHandler?
-
-    init(_ target: WKScriptMessageHandler) {
-        self.target = target
-    }
-
-    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
-        target?.userContentController(userContentController, didReceive: message)
     }
 }
 

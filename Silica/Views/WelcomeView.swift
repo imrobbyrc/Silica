@@ -19,9 +19,9 @@ struct WelcomeView: View {
         // Up into the hidden title bar, so the recents list runs the window's full
         // height and the hero centers on the whole window.
         .ignoresSafeArea(.container, edges: .top)
-        // Frosted, behind-window blur for the whole welcome window.
+        // Behind-window blur for the whole welcome window, unless Settings makes it opaque.
         .containerBackground(for: .window) {
-          VisualEffectView(.hudWindow)
+          WindowBackgroundView()
         }
         .overlay {
             if isDropTargeted {
@@ -58,30 +58,29 @@ struct WelcomeView: View {
 
             Spacer(minLength: 28)
 
-            GlassEffectContainer(spacing: 12) {
-                VStack(spacing: 10) {
+            VStack(spacing: 10) {
+                Button {
+                    opener.chooseAndOpen()
+                } label: {
+                    Label("Open Project…", systemImage: "folder.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .glassButtonStyle(prominent: true)
+                .keyboardShortcut("o")
+
+                if let last = store.projects.first {
                     Button {
-                        opener.chooseAndOpen()
+                        opener.open(last)
                     } label: {
-                        Label("Open Project…", systemImage: "folder.badge.plus")
+                        Label("Reopen “\(last.name)”", systemImage: "arrow.uturn.backward")
+                            .lineLimit(1)
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.glassProminent)
-                    .keyboardShortcut("o")
-
-                    if let last = store.projects.first {
-                        Button {
-                            opener.open(last)
-                        } label: {
-                            Label("Reopen “\(last.name)”", systemImage: "arrow.uturn.backward")
-                                .lineLimit(1)
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.glass)
-                    }
+                    .glassButtonStyle()
                 }
-                .controlSize(.extraLarge)
             }
+            .controlSize(.extraLarge)
+            .glassContainer(spacing: 12)
             .frame(width: 230)
 
             Text("or drop a project folder anywhere in this window")
@@ -131,7 +130,7 @@ struct WelcomeView: View {
                         }
                     }
                 }
-                .scrollEdgeEffectStyle(.soft, for: .vertical)
+                .softVerticalScrollEdges()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)

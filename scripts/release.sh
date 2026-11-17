@@ -12,6 +12,7 @@
 #   5. creates the GitHub release with the DMG attached
 #   6. adds the release to docs/appcast.xml (the Sparkle feed GitHub Pages serves)
 #      and pushes it, which is what makes running copies offer the update
+#   7. points the Homebrew cask in dqhieu/homebrew-tap at the new DMG
 #
 # Without a notes file, GitHub generates the notes from the commits since the last
 # release. Either way they are also embedded in the appcast for Sparkle to show.
@@ -31,6 +32,9 @@ PROJECT=Silica.xcodeproj
 PROJECT_FILE=$PROJECT/project.xcproj
 SCHEME=Silica
 FEED=docs/appcast.xml
+# The Homebrew tap and the cask in it that `brew install --cask dqhieu/tap/silica` reads.
+TAP=dqhieu/homebrew-tap
+CASK=Casks/silica.rb
 TAG=v$VERSION
 WORK=build/release/$VERSION
 PACKAGES=build/SourcePackages
@@ -172,6 +176,29 @@ cp "$FEED_WORK/appcast.xml" "$FEED"
 git add "$FEED"
 git commit -q -m "Offer $VERSION in the update feed"
 git push -q origin main
+
+# --- Homebrew -------------------------------------------------------------------
+
+# The cask names the version and the DMG's checksum; the URL follows from the
+# version. Committed through GitHub's API, so no checkout of the tap is needed.
+update_cask() {
+    local checksum blob cask
+    checksum=$(shasum -a 256 "$DMG" | cut -d' ' -f1)
+    blob=$(gh api "repos/$TAP/contents/$CASK" -q .sha) || return 1
+    cask=$(gh api "repos/$TAP/contents/$CASK" -H "Accept: application/vnd.github.raw") || return 1
+    cask=$(sed \
+        -e "s/^  version \".*\"/  version \"$VERSION\"/" \
+        -e "s/^  sha256 \".*\"/  sha256 \"$checksum\"/" <<<"$cask")
+    grep -q "version \"$VERSION\"" <<<"$cask" && grep -q "sha256 \"$checksum\"" <<<"$cask" || return 1
+    gh api -X PUT "repos/$TAP/contents/$CASK" \
+        -f message="Update Silica to $VERSION" \
+        -f content="$(base64 <<<"$cask")" \
+        -f sha="$blob" >/dev/null
+}
+
+# The release is out by now, so a failure here is reported rather than fatal.
+step "Updating the Homebrew cask"
+update_cask || echo "warning: couldn't update $CASK in $TAP; set its version and sha256 by hand (see RELEASING.md)" >&2
 
 step "Released Silica $VERSION"
 echo "https://github.com/$REPO/releases/tag/$TAG"

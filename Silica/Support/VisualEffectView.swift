@@ -30,3 +30,13 @@ struct VisualEffectView: NSViewRepresentable {
         nsView.state = state
     }
 }
+
+/// The background of a project or welcome window: translucent or opaque, as chosen
+/// in Settings. Open windows follow the setting as it changes.
+struct WindowBackgroundView: View {
+    private var settings: EditorSettings { .shared }
+
+    var body: some View {
+        VisualEffectView(settings.windowBackground.material)
+    }
+}

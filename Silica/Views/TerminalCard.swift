@@ -9,15 +9,13 @@ struct TerminalCard: View {
     let workspace: WorkspaceModel
 
     var body: some View {
-        // The same shape as the editor card: the bottom corners follow the window's.
-        let shape = ConcentricRectangle(corners: .concentric(minimum: .fixed(WorkspaceLayout.cardCornerRadius)))
         VStack(spacing: 0) {
             header
             TerminalViewHost(view: session.view)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .clipShape(shape)
-        .glassEffect(.regular, in: shape)
+        // The same shape as the editor card: the bottom corners follow the window's.
+        .workspaceCard()
     }
 
     private var header: some View {
@@ -299,9 +297,8 @@ private struct TerminalTab: View {
             Color.primary.opacity(!isSelected && isHovering ? 0.05 : 0),
             in: .rect(cornerRadius: 6, style: .continuous)
         )
-        // Only the selected tab sits on glass, like the editor's active tab;
-        // `.identity` renders no effect.
-        .glassEffect(isSelected ? .regular : .identity, in: .rect(cornerRadius: 6, style: .continuous))
+        // Only the selected tab sits on glass, like the editor's active tab.
+        .glassSurface(isSelected, in: .rect(cornerRadius: 6, style: .continuous))
         .contentShape(.rect(cornerRadius: 6, style: .continuous))
         .onTapGesture(perform: select)
         // Measured in the bar, as the tab moves with the drag.

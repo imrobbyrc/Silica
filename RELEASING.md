@@ -14,6 +14,11 @@ and staples the app and the DMG, tags `v1.2.0`, creates the GitHub release, then
 adds the release to `docs/appcast.xml` and pushes it. Copies of Silica see the
 update as soon as Pages redeploys. Run it from a clean, pushed `main`.
 
+Last, it points the Homebrew cask at the new DMG: `Casks/silica.rb` in
+[dqhieu/homebrew-tap](https://github.com/dqhieu/homebrew-tap), which is what
+`brew install --cask dqhieu/tap/silica` reads. The cask names the version and the
+DMG's SHA-256; the script commits both through GitHub's API.
+
 Write the notes in Markdown; they appear on the GitHub release and in Sparkle's
 update window. Keep the file outside the repository (or commit it first), since
 the script stops on uncommitted changes. GitHub's generated notes are built from
@@ -84,6 +89,11 @@ background, see the comment at the top of `make-dmg.sh`.
   the release by hand with the DMG in `build/release/<version>/`, then run the
   last block of `scripts/release.sh` (generate_appcast and the commit of
   `docs/appcast.xml`) by hand. Don't re-run the whole script: the tag exists.
+
+- **"couldn't update Casks/silica.rb"**: the release is out, but Homebrew still
+  installs the previous version. In `Casks/silica.rb` in dqhieu/homebrew-tap, set
+  `version` to the new version and `sha256` to the output of
+  `shasum -a 256 build/release/<version>/Silica-<version>.dmg`, and push.
 
 ## Pulling a bad update
 
