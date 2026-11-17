@@ -28,6 +28,8 @@ final class EditorBuffer: Identifiable {
     private(set) var encoding: String.Encoding
 
     var isDirty = false
+    /// Increments for each text edit so diff status can refresh beyond the first dirty transition.
+    private(set) var textRevision = 0
     /// The file was deleted or moved away after it was opened. The tab keeps its
     /// text; saving writes the file again.
     private(set) var isMissingOnDisk = false
@@ -51,6 +53,15 @@ final class EditorBuffer: Identifiable {
     private(set) var isShowingPreview = false
     /// Created the first time the preview is shown, then kept with the tab.
     @ObservationIgnored private(set) var preview: DocumentPreview?
+    /// The card shows the file's diff against HEAD beside its text, so the source
+    /// stays editable. Toggled from the title bar's Git button when the file differs.
+    private(set) var isShowingGitDiff = false
+    /// The patch as a read-only editor with `.diff` highlighting — the file-level
+    /// header lines (`diff --git`, `---`, `+++`) stripped from the display, hunks
+    /// kept — rebuilt for each showing so it always describes HEAD as it is now.
+    /// Observed so a live patch swap re-renders the card even though the mode
+    /// itself didn't change.
+    private(set) var gitDiffController: TextController?
     /// Opens a project file a preview link points to.
     @ObservationIgnored var openFile: ((URL) -> Void)?
     /// The project folder, which an HTML preview may load files from.
@@ -221,6 +232,10 @@ final class EditorBuffer: Identifiable {
         return isDirty
     }
 
+    func noteTextDidChange() {
+        textRevision &+= 1
+    }
+
     init(url: URL) {
         self.url = url
         isUntitled = false
@@ -333,6 +348,10 @@ final class EditorBuffer: Identifiable {
         // format; make a new one when needed.
         isShowingPreview = isShowingPreview && newFormat != nil
         preview = nil
+        // The diff was made against HEAD's copy of the old path; back to the source
+        // rather than show a patch for a file that no longer exists there.
+        clearGitDiff()
+        isShowingGitDiff = false
         if isShowingPreview, let newFormat, let controller = textController {
             let preview = makePreview(for: controller, format: newFormat)
             self.preview = preview
@@ -357,24 +376,93 @@ final class EditorBuffer: Identifiable {
     }
 
     /// Switches between source and preview, keeping roughly the same place in the
-    /// document.
-    func setShowingPreview(_ show: Bool) {
-        guard let format = previewFormat, let controller = textController, show != isShowingPreview else { return }
+    /// document. `editLine` (from a double-click) puts the cursor on that source line.
+    /// Asking for the source also puts the Git diff away: the rendered preview and
+    /// the side-by-side diff never show together.
+    func setShowingPreview(_ show: Bool, editLine: Int? = nil) {
+        guard let controller = textController, show != isShowingPreview else { return }
+        if show, previewFormat == nil { return }
         if show {
+            guard let format = previewFormat, !isShowingPreview else { return }
+            clearGitDiff()
+            isShowingGitDiff = false
             let preview = self.preview ?? makePreview(for: controller, format: format)
             self.preview = preview
             preview.show(controller.textView.string, line: controller.topVisibleLine())
             isShowingPreview = true
-        } else if format == .html {
+        } else if isShowingGitDiff {
+            setShowingGitDiff(false)
+        } else if case .html? = previewFormat {
             // A page has no source lines to match, so the editor stays where it was.
             isShowingPreview = false
             preview?.unloadPage()
-        } else {
+        } else if let editLine {
+            isShowingPreview = false
+            DispatchQueue.main.async { controller.scroll(toLine: editLine, placingCursor: true) }
+        } else if isShowingPreview {
             preview?.topVisibleLine { [weak self] line in
                 self?.isShowingPreview = false
                 DispatchQueue.main.async { controller.scroll(toLine: line) }
             }
         }
+    }
+
+    /// Shows `patch` (from `GitDiffService`, the buffer's text against HEAD) beside
+    /// the source as a read-only diff, hiding any rendered preview; `false` returns
+    /// the card to the source alone. The text keeps its undo, selection and scroll
+    /// throughout: its editor stays mounted in both layouts.
+    func setShowingGitDiff(_ show: Bool, patch: String? = nil) {
+        guard textController != nil, show != isShowingGitDiff else { return }
+        if show {
+            guard let patch else { return }
+            gitDiffController = makeGitDiffController(patch: patch)
+            isShowingPreview = false
+        } else {
+            clearGitDiff()
+        }
+        isShowingGitDiff = show
+    }
+
+    /// Swaps the shown patch for one freshly computed against HEAD now, staying in
+    /// the mode. Skipped when the displayed lines didn't change, so a save or an
+    /// idle Git refresh doesn't jump the diff back to its top.
+    func updateGitDiff(patch: String) {
+        guard isShowingGitDiff, textController != nil else { return }
+        let display = GitDiffDisplay(patch: patch)
+        guard let current = gitDiffController, current.textView.string != display.text else { return }
+        gitDiffController = makeGitDiffController(display: display)
+    }
+
+    /// Builds the read-only diff pane: the file-level header is stripped from the
+    /// display, the pane opens where the source is being read, and both panes'
+    /// scrolling follows the other through the patch's line map.
+    private func makeGitDiffController(display: GitDiffDisplay) -> TextController {
+        // A stale pane's link goes before the new one takes over.
+        gitDiffController?.scrollPeer = nil
+        gitDiffController?.peerTopLine = nil
+        let diff = TextController(text: display.text, language: .diff)
+        // The patch is a snapshot to read, not an editor: no cursor, no typing.
+        diff.textView.isEditable = false
+        if let source = textController {
+            diff.restorePosition(cursor: nil, topLine: display.displayedLine(forSourceLine: source.topVisibleLine()))
+            source.scrollPeer = diff
+            source.peerTopLine = { display.displayedLine(forSourceLine: $0) }
+            diff.scrollPeer = source
+            diff.peerTopLine = { display.sourceLine(forDisplayedLine: $0) }
+        }
+        return diff
+    }
+
+    private func makeGitDiffController(patch: String) -> TextController {
+        makeGitDiffController(display: GitDiffDisplay(patch: patch))
+    }
+
+    /// Takes the diff away (source, preview, rename) with its scroll link, so the
+    /// source never follows a patch that is gone.
+    private func clearGitDiff() {
+        textController?.scrollPeer = nil
+        textController?.peerTopLine = nil
+        gitDiffController = nil
     }
 
     private func makePreview(for controller: TextController, format: PreviewFormat) -> DocumentPreview {

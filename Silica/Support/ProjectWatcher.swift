@@ -6,10 +6,15 @@ import Foundation
 final class ProjectWatcher {
     private var stream: FSEventStreamRef?
     private let onChange: () -> Void
+    private let onGitChange: () -> Void
+    private let gitDirectoryPaths: [String]
 
-    /// `onChange` runs on the main queue.
-    init(url: URL, onChange: @escaping () -> Void) {
+    /// Both callbacks run on the main queue.
+    init(url: URL, onChange: @escaping () -> Void, onGitChange: @escaping () -> Void = {}) {
         self.onChange = onChange
+        self.onGitChange = onGitChange
+        gitDirectoryPaths = Self.gitDirectories(for: url).map(\.path)
+        let watchedPaths = Self.watchedPaths(root: url, gitDirectoryPaths: gitDirectoryPaths)
 
         var context = FSEventStreamContext(
             version: 0,
@@ -25,7 +30,7 @@ final class ProjectWatcher {
         }
         guard let stream = FSEventStreamCreate(
             nil, callback, &context,
-            [url.path(percentEncoded: false)] as CFArray,
+            watchedPaths as CFArray,
             FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
             0.3,
             FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes)
@@ -48,11 +53,63 @@ final class ProjectWatcher {
     }
 
     private func handle(_ paths: [String]) {
-        // Git rewrites its own files constantly (index, locks, logs); the working
-        // tree changes a checkout makes arrive as their own events.
-        let relevant = paths.contains { path in
-            !path.contains("/.git/") && !path.hasSuffix("/.git")
+        let gitChanged = paths.contains(where: isGitPath)
+        let workingTreeChanged = paths.contains { !isGitPath($0) }
+        if workingTreeChanged { onChange() }
+        if gitChanged { onGitChange() }
+    }
+
+    private func isGitPath(_ path: String) -> Bool {
+        let normalized = URL(fileURLWithPath: path).standardizedFileURL.path
+        if gitDirectoryPaths.contains(where: { Self.contains(normalized, in: $0) }) { return true }
+        return URL(fileURLWithPath: normalized).pathComponents.contains(".git")
+    }
+
+    private static func watchedPaths(root: URL, gitDirectoryPaths: [String]) -> [String] {
+        let rootPath = root.standardizedFileURL.path
+        // The root stream recursively covers Git metadata inside the project; add external gitdirs separately.
+        let metadataPaths = Array(Set(gitDirectoryPaths.filter { !contains($0, in: rootPath) }))
+        let minimalMetadataPaths = metadataPaths.filter { path in
+            !metadataPaths.contains { $0 != path && contains(path, in: $0) }
         }
-        if relevant { onChange() }
+        return [rootPath] + minimalMetadataPaths
+    }
+
+    private static func gitDirectories(for url: URL) -> [URL] {
+        var directory = url.standardizedFileURL
+        while true {
+            let marker = directory.appendingPathComponent(".git")
+            var isDirectory: ObjCBool = false
+            if FileManager.default.fileExists(atPath: marker.path, isDirectory: &isDirectory) {
+                let gitDirectory: URL
+                if isDirectory.boolValue {
+                    gitDirectory = marker
+                } else if let contents = try? String(contentsOf: marker, encoding: .utf8) {
+                    let markerContents = contents.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let prefix = "gitdir: "
+                    guard markerContents.hasPrefix(prefix) else { return [] }
+                    gitDirectory = URL(
+                        fileURLWithPath: String(markerContents.dropFirst(prefix.count)),
+                        relativeTo: directory
+                    ).standardizedFileURL
+                } else {
+                    return []
+                }
+                var paths = [gitDirectory]
+                let commonDirectoryFile = gitDirectory.appendingPathComponent("commondir")
+                if let commonPath = try? String(contentsOf: commonDirectoryFile, encoding: .utf8)
+                    .trimmingCharacters(in: .whitespacesAndNewlines), !commonPath.isEmpty {
+                    paths.append(URL(fileURLWithPath: commonPath, relativeTo: gitDirectory).standardizedFileURL)
+                }
+                return paths
+            }
+            let parent = directory.deletingLastPathComponent()
+            guard parent.path != directory.path else { return [] }
+            directory = parent
+        }
+    }
+
+    private static func contains(_ path: String, in directory: String) -> Bool {
+        path == directory || path.hasPrefix(directory.hasSuffix("/") ? directory : directory + "/")
     }
 }

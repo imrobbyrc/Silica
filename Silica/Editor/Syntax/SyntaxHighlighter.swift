@@ -9,20 +9,8 @@ import AppKit
 final class SyntaxHighlighter {
     private weak var textView: NSTextView?
     private let tokenizer: any SyntaxTokenizer
-    private let language: SyntaxLanguage
     private var pending: Task<Void, Never>?
     private var generation = 0
-    private var linkRanges: [NSRange] = []
-
-    private static let pythonFromImportPattern = try! NSRegularExpression(
-        pattern: #"(?m)^[ \t]*from[ \t]+(\.*[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*|\.+)[ \t]+import[ \t]*(\([^)]*\)|[^#\n]*)"#
-    )
-    private static let pythonImportPattern = try! NSRegularExpression(
-        pattern: #"(?m)^[ \t]*import[ \t]+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)"#
-    )
-    private static let pythonImportedIdentifierPattern = try! NSRegularExpression(
-        pattern: #"[A-Za-z_]\w*"#
-    )
 
     /// Above this many UTF-16 units, highlighting is skipped entirely.
     private static let maxLength = 2_000_000
@@ -33,7 +21,6 @@ final class SyntaxHighlighter {
     init(textView: NSTextView, language: SyntaxLanguage) {
         self.textView = textView
         self.tokenizer = language.tokenizer
-        self.language = language
     }
 
     deinit {
@@ -52,25 +39,49 @@ final class SyntaxHighlighter {
     }
 
     func textDidChange() {
-        linkRanges.removeAll(keepingCapacity: true)
         schedule(after: Self.editDelay)
     }
 
-    /// A linkable syntax function or Python import module under this UTF-16 offset.
+    /// Returns identifier containing UTF-16 offset; LSP confirms whether it resolves.
     func linkRange(at offset: Int) -> NSRange? {
-        var low = 0
-        var high = linkRanges.count
-        while low < high {
-            let middle = (low + high) / 2
-            if NSMaxRange(linkRanges[middle]) <= offset {
-                low = middle + 1
-            } else {
-                high = middle
-            }
+        guard let textView else { return nil }
+        return Self.identifierRange(at: offset, in: textView.string as NSString)
+    }
+
+    private static func identifierRange(at offset: Int, in text: NSString) -> NSRange? {
+        guard offset >= 0, offset < text.length else { return nil }
+        let current = text.rangeOfComposedCharacterSequence(at: offset)
+        guard isIdentifierCharacter(text.substring(with: current)) else { return nil }
+
+        var start = current.location
+        var end = NSMaxRange(current)
+        while start > 0 {
+            let previous = text.rangeOfComposedCharacterSequence(at: start - 1)
+            guard isIdentifierCharacter(text.substring(with: previous)) else { break }
+            start = previous.location
         }
-        guard low < linkRanges.count else { return nil }
-        let range = linkRanges[low]
-        return range.location <= offset && offset < NSMaxRange(range) ? range : nil
+        while end < text.length {
+            let next = text.rangeOfComposedCharacterSequence(at: end)
+            guard isIdentifierCharacter(text.substring(with: next)) else { break }
+            end = NSMaxRange(next)
+        }
+        let range = NSRange(location: start, length: end - start)
+        let first = text.rangeOfComposedCharacterSequence(at: start)
+        guard isIdentifierStart(text.substring(with: first)) else { return nil }
+        return range
+    }
+
+    private static func isIdentifierCharacter(_ character: String) -> Bool {
+        character.unicodeScalars.allSatisfy {
+            CharacterSet.alphanumerics.contains($0)
+                || CharacterSet.nonBaseCharacters.contains($0)
+                || $0 == "_" || $0 == "$"
+        }
+    }
+
+    private static func isIdentifierStart(_ character: String) -> Bool {
+        guard let first = character.unicodeScalars.first else { return false }
+        return CharacterSet.letters.contains(first) || first == "_" || first == "$"
     }
 
     private func schedule(after delay: Duration) {
@@ -100,20 +111,6 @@ final class SyntaxHighlighter {
         (storage.string as NSString).copy() as! NSString
     }
 
-    private static func overlapsNonCode(_ candidate: NSRange, ranges: [NSRange]) -> Bool {
-        var low = 0
-        var high = ranges.count
-        while low < high {
-            let middle = (low + high) / 2
-            if NSMaxRange(ranges[middle]) <= candidate.location {
-                low = middle + 1
-            } else {
-                high = middle
-            }
-        }
-        return low < ranges.count && ranges[low].location < NSMaxRange(candidate)
-    }
-
     private func apply(_ tokens: [SyntaxToken]) {
         guard let textView, let storage = textView.textStorage else { return }
         // Recoloring under in-progress IME composition would disturb the marked text.
@@ -121,49 +118,6 @@ final class SyntaxHighlighter {
             schedule(after: Self.editDelay)
             return
         }
-
-        var ranges = tokens
-            .filter { if case .function = $0.kind { true } else { false } }
-            .map(\.range)
-        if language == .python {
-            let source = storage.string as NSString
-            let sourceRange = NSRange(location: 0, length: source.length)
-            let nonCodeRanges = tokens
-                .filter {
-                    switch $0.kind {
-                    case .comment, .string: true
-                    default: false
-                    }
-                }
-                .map(\.range)
-                .sorted { $0.location < $1.location }
-            let sourceString = source as String
-            Self.pythonFromImportPattern.enumerateMatches(in: sourceString, range: sourceRange) { match, _, _ in
-                guard let match else { return }
-                let moduleRange = match.range(at: 1)
-                if moduleRange.location != NSNotFound, moduleRange.length > 0,
-                   !Self.overlapsNonCode(moduleRange, ranges: nonCodeRanges) {
-                    ranges.append(moduleRange)
-                }
-                let namesRange = match.range(at: 2)
-                guard namesRange.location != NSNotFound, namesRange.length > 0 else { return }
-                Self.pythonImportedIdentifierPattern.enumerateMatches(in: sourceString, range: namesRange) { nameMatch, _, _ in
-                    guard let nameMatch else { return }
-                    let nameRange = nameMatch.range
-                    guard source.substring(with: nameRange) != "as",
-                          !Self.overlapsNonCode(nameRange, ranges: nonCodeRanges) else { return }
-                    ranges.append(nameRange)
-                }
-            }
-            Self.pythonImportPattern.enumerateMatches(in: sourceString, range: sourceRange) { match, _, _ in
-                guard let match else { return }
-                let range = match.range(at: 1)
-                guard range.location != NSNotFound, range.length > 0,
-                      !Self.overlapsNonCode(range, ranges: nonCodeRanges) else { return }
-                ranges.append(range)
-            }
-        }
-        linkRanges = ranges.sorted { $0.location < $1.location }
 
         let theme = EditorSettings.shared.syntaxTheme
         let length = storage.length

@@ -41,6 +41,8 @@ final class WorkspaceModel {
         didSet { scheduleSessionSave() }
     }
     private(set) var buffers: [URL: EditorBuffer] = [:]
+    private(set) var gitStateRevision = 0
+    private(set) var gitStatusSnapshot = GitStatusSnapshot.empty
 
     /// The project's terminals, in the order of their tabs. They keep running while
     /// their card is hidden.
@@ -56,6 +58,8 @@ final class WorkspaceModel {
     @ObservationIgnored private var isAccessingStandaloneFile: Bool
     @ObservationIgnored private let persistsSession: Bool
     @ObservationIgnored private var watcher: ProjectWatcher?
+    @ObservationIgnored private var gitStatusRefreshTask: Task<Void, Never>?
+    @ObservationIgnored private var gitStatusGeneration = 0
     @ObservationIgnored private var terminationObserver: NSObjectProtocol?
     @ObservationIgnored private var isRestoringSession = false
     @ObservationIgnored private var sessionSaveTask: Task<Void, Never>?
@@ -95,10 +99,15 @@ final class WorkspaceModel {
             return texts
         }
         // Keep the tree and open files in step with changes made by other apps.
-        watcher = ProjectWatcher(url: rootURL) { [weak self] in
+        watcher = ProjectWatcher(url: rootURL, onChange: { [weak self] in
             self?.refresh()
-        }
+        }, onGitChange: { [weak self] in
+            guard let self else { return }
+            self.gitStateRevision &+= 1
+            self.scheduleGitStatusRefresh()
+        })
         lsp = LanguageServerCoordinator(rootURL: rootURL)
+        scheduleGitStatusRefresh()
         if let standaloneFileURL {
             isSidebarVisible = false
             open(standaloneFileURL)
@@ -122,6 +131,8 @@ final class WorkspaceModel {
         }
         watcher?.stop()
         watcher = nil
+        gitStatusRefreshTask?.cancel()
+        gitStatusRefreshTask = nil
         for terminal in terminals { terminal.close() }
         terminals = []
         terminal = nil
@@ -319,6 +330,19 @@ final class WorkspaceModel {
     /// definition of the symbol at `offset` (default: the caret) and opens it.
     /// Servers are started on demand; if none is installed for the language, a
     /// dialog says so.
+    /// Shows a diagnostics range from the Problems popover: leaves any Git
+    /// preview, then selects and scrolls to the range.
+    func revealDiagnostic(_ diagnostic: LSPDiagnostic, in buffer: EditorBuffer) {
+        guard let controller = buffer.textController else { return }
+        let text = controller.textView.string as NSString
+        if buffer.isShowingPreview {
+            buffer.setShowingPreview(false)
+        }
+        let range = LSPPositionMapper.nsRange(of: diagnostic.range, in: text)
+            ?? NSRange(location: 0, length: 0)
+        controller.reveal(range)
+    }
+
     func goToDefinition(at offset: Int? = nil, in buffer: EditorBuffer? = nil) {
         guard let buffer = buffer ?? activeBuffer,
               let controller = buffer.textController,
@@ -476,9 +500,24 @@ final class WorkspaceModel {
         FolderIcons.shared.reload()
         syncOpenFilesWithDisk()
         search.refresh()
+        scheduleGitStatusRefresh()
         // Files may have come or gone: filter a fresh list.
         treeFilterItems = nil
         if treeFilterResult != nil { scheduleTreeFilter(after: .milliseconds(300)) }
+    }
+
+    private func scheduleGitStatusRefresh() {
+        gitStatusGeneration &+= 1
+        let generation = gitStatusGeneration
+        let rootURL = self.rootURL
+        gitStatusRefreshTask?.cancel()
+        gitStatusRefreshTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled else { return }
+            let snapshot = await GitDiffService.status(rootURL: rootURL)
+            guard let self, !Task.isCancelled, self.gitStatusGeneration == generation else { return }
+            self.gitStatusSnapshot = snapshot
+        }
     }
 
     // MARK: Tree filter
@@ -591,6 +630,7 @@ final class WorkspaceModel {
             // Tell the language server about edits; debounced by the coordinator.
             controller.textDidChangeHandler = { [weak self, weak buffer] in
                 guard let buffer else { return }
+                buffer.noteTextDidChange()
                 self?.lsp?.documentDidChange(buffer)
             }
             // ⌘-click goes to definition.
@@ -598,14 +638,28 @@ final class WorkspaceModel {
                 guard let buffer else { return }
                 self?.goToDefinition(at: offset, in: buffer)
             }
-            controller.textView.onCommandHover = { [weak self, weak buffer] in
+            controller.textView.onCommandDefinitionCheck = { [weak self, weak buffer] offset in
                 guard let self, let buffer, !buffer.isUntitled,
-                      let language = SyntaxLanguage(url: buffer.url) else { return }
-                Task { await self.lsp?.prepare(language: language) }
+                      let controller = buffer.textController,
+                      let lsp = self.lsp else { return false }
+                let outcome = await lsp.definition(
+                    in: buffer,
+                    atUTF16Offset: offset,
+                    currentText: controller.textView.string
+                )
+                if case .definition = outcome { return true }
+                return false
+            }
+            // ⌘Space completion candidates at a UTF-16 offset.
+            controller.completionProvider = { [weak self, weak buffer] offset in
+                guard let self, let buffer, !buffer.isUntitled,
+                      let controller = buffer.textController else { return [] }
+                return await self.lsp?.completions(in: buffer, atUTF16Offset: offset,
+                                                   currentText: controller.textView.string) ?? []
             }
         }
         // Announce the file to its language server (no-op for unmapped languages;
-        // Command-hover prewarms its server before the first definition click).
+        // Command-hover requests a definition before showing the hand cursor).
         lsp?.documentDidOpen(buffer)
         return buffer
     }

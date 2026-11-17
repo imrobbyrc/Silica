@@ -30,18 +30,44 @@ nonisolated private final class TerminationBox: @unchecked Sendable {
     }
 }
 
-/// Handles messages the language server sends to Silica. Silica declares no
-/// server-to-client capabilities, so every request is answered `methodNotFound`
-/// (which servers must cope with) and notifications are logged.
-///
-/// Called by the transport on its own queue — deliberately not main-actor and
-/// deliberately state-free.
+private struct WorkspaceConfigurationRequest: LSPRequest, Hashable {
+    static let method = "workspace/configuration"
+    typealias Response = [LSPAny]
+
+    struct Item: Codable, Hashable, Sendable {
+        let scopeURI: DocumentURI?
+        let section: String?
+
+        enum CodingKeys: String, CodingKey {
+            case scopeURI = "scopeUri"
+            case section
+        }
+    }
+
+    let items: [Item]
+}
+
+/// Handles requests and notifications the language server sends to Silica.
+/// Called by the transport on its own queue; UI state is updated on MainActor.
 final class LSPClientHandler: MessageHandler, Sendable {
     private static let logger = Logger(subsystem: "app.silica", category: "lsp-client")
+    private let workspaceFolder: WorkspaceFolder
+    private let onDiagnostics: @Sendable (DocumentURI, [Diagnostic]) -> Void
+
+    init(
+        workspaceFolder: WorkspaceFolder,
+        onDiagnostics: @escaping @Sendable (DocumentURI, [Diagnostic]) -> Void
+    ) {
+        self.workspaceFolder = workspaceFolder
+        self.onDiagnostics = onDiagnostics
+    }
 
     nonisolated func handle(_ notification: some NotificationType) {
-        // e.g. publishDiagnostics — ignored for now; Silica has no diagnostics UI.
-        Self.logger.debug("Ignoring server notification: \(String(describing: type(of: notification)))")
+        guard let notification = notification as? PublishDiagnosticsNotification else {
+            Self.logger.debug("Ignoring server notification: \(String(describing: type(of: notification)))")
+            return
+        }
+        onDiagnostics(notification.uri, notification.diagnostics)
     }
 
     nonisolated func handle<Request: RequestType>(
@@ -49,6 +75,16 @@ final class LSPClientHandler: MessageHandler, Sendable {
         id: RequestID,
         reply: @Sendable @escaping (LSPResult<Request.Response>) -> Void
     ) {
+        if let request = request as? WorkspaceConfigurationRequest,
+           let response = [LSPAny](repeating: .null, count: request.items.count) as? Request.Response {
+            reply(.success(response))
+            return
+        }
+        if request is WorkspaceFoldersRequest,
+           let response = Optional([workspaceFolder]) as? Request.Response {
+            reply(.success(response))
+            return
+        }
         Self.logger.debug("Replying methodNotFound to server request: \(Request.method)")
         reply(.failure(.methodNotFound(Request.method)))
     }
@@ -87,11 +123,13 @@ final class ProjectLanguageServer {
     /// `initialize(rootURL:)` afterwards; document messages may only be sent
     /// once that completes.
     static func start(
+        rootURL: URL,
         for language: SyntaxLanguage,
         spec: LanguageServerRegistry.ServerSpec,
         executable: URL,
         arguments: [String],
         environmentPath: String,
+        onDiagnostics: @escaping @MainActor (DocumentURI, [Diagnostic]) -> Void,
         onTermination: @escaping @MainActor (ProjectLanguageServer) -> Void
     ) throws -> ProjectLanguageServer {
         // The transport calls the termination handler from its own queue before
@@ -104,9 +142,19 @@ final class ProjectLanguageServer {
             executable: URL(filePath: "/usr/bin/env"),
             arguments: ["PATH=\(environmentPath)", executable.path] + arguments,
             name: "Silica",
-            protocol: MessageRegistry.lspProtocol,
+            protocol: MessageRegistry(
+                requests: builtinRequests + [WorkspaceConfigurationRequest.self],
+                notifications: builtinNotifications
+            ),
             stderrLoggingCategory: "lsp-stderr",
-            client: LSPClientHandler(),
+            client: LSPClientHandler(
+                workspaceFolder: WorkspaceFolder(
+                    uri: DocumentURI(rootURL),
+                    name: rootURL.lastPathComponent
+                )
+            ) { uri, diagnostics in
+                Task { @MainActor in onDiagnostics(uri, diagnostics) }
+            },
             terminationHandler: { reason in box.fire(reason) }
         )
         let server = ProjectLanguageServer(
@@ -147,8 +195,16 @@ final class ProjectLanguageServer {
             clientInfo: .init(name: "Silica", version: version),
             rootPath: rootURL.path,
             rootURI: root,
-            capabilities: ClientCapabilities(),
-            workspaceFolders: [WorkspaceFolder(uri: root)]
+            capabilities: ClientCapabilities(
+                workspace: WorkspaceClientCapabilities(workspaceFolders: true, configuration: true),
+                textDocument: TextDocumentClientCapabilities(
+                    completion: .init(
+                        completionItem: .init(snippetSupport: false),
+                        contextSupport: true
+                    )
+                )
+            ),
+            workspaceFolders: [WorkspaceFolder(uri: root, name: rootURL.lastPathComponent)]
         )
         _ = try await connection.send(request)
         connection.send(InitializedNotification())
@@ -245,6 +301,17 @@ final class ProjectLanguageServer {
         case nil:
             return []
         }
+    }
+
+    /// Asks for completions. A server answering `null` decodes as an error;
+    /// callers treat any throw here as "no completions".
+    func completionItems(textDocumentURL: URL, position: Position) async throws -> [CompletionItem] {
+        let response = try await connection.send(CompletionRequest(
+            textDocument: TextDocumentIdentifier(DocumentURI(textDocumentURL)),
+            position: position,
+            context: CompletionContext(triggerKind: .invoked)
+        ))
+        return response.items
     }
 
     /// Politely shuts the server down: `shutdown` (best effort), `exit`, then

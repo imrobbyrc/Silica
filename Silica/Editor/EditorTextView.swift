@@ -48,7 +48,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func didChangeText() {
-        setCommandHoverRange(nil)
+        cancelCommandHoverRequest()
         super.didChangeText()
         // Guides follow the text, so any edit can move them.
         setNeedsDisplay(visibleRect)
@@ -59,11 +59,14 @@ final class EditorTextView: NSTextView {
     /// Called with the clicked UTF-16 offset when the user ⌘-clicks; the workspace
     /// wires this up to go-to-definition. When set, ⌘-clicks don't move the caret.
     var onCommandClick: ((Int) -> Void)?
-    /// Starts the server in the background when the user hovers a linkable token.
-    var onCommandHover: (() -> Void)?
-    /// shortcut: `.function` syntax tokens can be unresolved calls; use semantic hover requests if false cues become a problem.
+    /// Resolves the identifier under ⌘-hover; hand cursor appears only on a definition.
+    var onCommandDefinitionCheck: ((Int) async -> Bool)?
+    /// Returns lexical identifier candidate containing a UTF-16 offset.
     var commandLinkRangeAt: ((Int) -> NSRange?)?
     private var commandHoverRange: NSRange?
+    private var commandHoverCandidateRange: NSRange?
+    private var commandHoverRequestTask: Task<Void, Never>?
+    private var commandHoverGeneration = 0
     private var commandTrackingArea: NSTrackingArea?
 
     override func updateTrackingAreas() {
@@ -94,7 +97,7 @@ final class EditorTextView: NSTextView {
     }
 
     override func mouseExited(with event: NSEvent) {
-        setCommandHoverRange(nil)
+        cancelCommandHoverRequest()
         NSCursor.arrow.set()
         super.mouseExited(with: event)
     }
@@ -106,17 +109,50 @@ final class EditorTextView: NSTextView {
 
     private func updateCommandHover(at windowPoint: NSPoint, modifiers: NSEvent.ModifierFlags) {
         let flags = modifiers.intersection(.deviceIndependentFlagsMask)
-        let range: NSRange?
-        if flags.contains(.command), let commandLinkRangeAt,
-           let offset = utf16Offset(atClick: convert(windowPoint, from: nil)) {
-            range = commandLinkRangeAt(offset)
-        } else {
-            range = nil
+        guard flags.contains(.command),
+              let offset = utf16Offset(atClick: convert(windowPoint, from: nil)),
+              let range = commandLinkRangeAt?(offset),
+              let resolveDefinition = onCommandDefinitionCheck else {
+            cancelCommandHoverRequest()
+            return
         }
-        let wasHoveringLink = commandHoverRange != nil
-        setCommandHoverRange(range)
-        if !wasHoveringLink, range != nil { onCommandHover?() }
-        (range == nil ? NSCursor.iBeam : .pointingHand).set()
+
+        if range == commandHoverCandidateRange {
+            (commandHoverRange == range ? NSCursor.pointingHand : .iBeam).set()
+            return
+        }
+
+        cancelCommandHoverRequest()
+        commandHoverCandidateRange = range
+        commandHoverGeneration += 1
+        let generation = commandHoverGeneration
+        let currentText = string
+        commandHoverRequestTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(120))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            let hasDefinition = await resolveDefinition(offset)
+            guard let self,
+                  !Task.isCancelled,
+                  self.commandHoverGeneration == generation,
+                  self.commandHoverCandidateRange == range,
+                  self.string == currentText else { return }
+            self.commandHoverRequestTask = nil
+            self.setCommandHoverRange(hasDefinition ? range : nil)
+            (hasDefinition ? NSCursor.pointingHand : .iBeam).set()
+        }
+    }
+
+    private func cancelCommandHoverRequest() {
+        commandHoverGeneration += 1
+        commandHoverRequestTask?.cancel()
+        commandHoverRequestTask = nil
+        commandHoverCandidateRange = nil
+        setCommandHoverRange(nil)
+        NSCursor.iBeam.set()
     }
 
     private func setCommandHoverRange(_ range: NSRange?) {
@@ -126,6 +162,8 @@ final class EditorTextView: NSTextView {
     }
 
     override func mouseDown(with event: NSEvent) {
+        // A click moves the caret; the completion list is anchored to it.
+        _ = onCompletionCommand?(.cancel)
         let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if modifiers.contains(.command), let onCommandClick,
            let offset = utf16Offset(atClick: convert(event.locationInWindow, from: nil)),
@@ -136,48 +174,82 @@ final class EditorTextView: NSTextView {
         super.mouseDown(with: event)
     }
 
-    /// Maps a click (in view coordinates) to a text offset by hit-testing the
-    /// TextKit 2 layout: the paragraph's layout fragment, then the line within it,
-    /// then the character within that line.
-    private func utf16Offset(atClick point: NSPoint) -> Int? {
-        guard let layoutManager = textLayoutManager,
-              let contentManager = layoutManager.textContentManager else { return nil }
-        // Layout geometry is relative to the text container origin.
-        let layoutPoint = NSPoint(x: point.x - textContainerOrigin.x, y: point.y - textContainerOrigin.y)
-        guard let fragment = layoutManager.textLayoutFragment(for: layoutPoint) else { return nil }
+    // MARK: Completion commands
 
-        // The line whose vertical band the click falls in — or, when the click
-        // lands between or after lines, the nearest one. Lines are positioned
-        // by their typographic bounds inside the fragment's frame.
-        var nearestLine: NSTextLineFragment?
-        var nearestTop: CGFloat = 0
-        var nearestDistance = CGFloat.greatestFiniteMagnitude
-        for line in fragment.textLineFragments {
-            let top = fragment.layoutFragmentFrame.minY + line.typographicBounds.minY
-            let maxY = top + line.typographicBounds.height
-            let distance = layoutPoint.y < top ? top - layoutPoint.y : (layoutPoint.y > maxY ? layoutPoint.y - maxY : 0)
-            if distance < nearestDistance {
-                nearestDistance = distance
-                nearestLine = line
-                nearestTop = top
-            }
+    /// An editing command routed to the completion panel while it is visible.
+    enum EditingCommand {
+        case moveUp
+        case moveDown
+        case accept
+        case cancel
+        /// Backspace: the panel closes, the editor still performs the deletion.
+        case delete
+    }
+
+    /// Toggled by ⌘Space; the text controller answers it.
+    var onCompletionTrigger: (() -> Void)?
+    /// Asks the completion panel to consume a command while it is visible;
+    /// `true` means handled and the view skips its own behavior.
+    var onCompletionCommand: ((EditingCommand) -> Bool)?
+
+    // MARK: Word ranges
+
+    /// The typed prefix ending at `offset`, including an empty range at word boundaries.
+    /// Word characters match the coordinator's prefix rule: alphanumerics, `_`, `$`.
+    func wordRange(at offset: Int) -> NSRange? {
+        let text = string as NSString
+        guard offset >= 0, offset <= text.length else { return nil }
+        var start = offset
+        while start > 0, Self.isWordCharacter(text.character(at: start - 1)) {
+            start -= 1
         }
-        guard let line = nearestLine, nearestDistance == 0 else { return nil }
-        let pointXInLine = layoutPoint.x - fragment.layoutFragmentFrame.minX
-        let lineStartX = line.locationForCharacter(at: 0).x
-        let lineEndX = line.locationForCharacter(at: line.characterRange.length).x
-        guard pointXInLine >= min(lineStartX, lineEndX),
-              pointXInLine <= max(lineStartX, lineEndX) else { return nil }
+        return NSRange(location: start, length: offset - start)
+    }
 
-        // `characterIndex(for:)` expects the point in the line's own space,
-        // clamped into the line's bounds.
-        let pointInLine = NSPoint(
-            x: pointXInLine,
-            y: min(max(layoutPoint.y - nearestTop, 0), line.typographicBounds.height)
-        )
-        let documentStart = layoutManager.documentRange.location
-        let fragmentOffset = contentManager.offset(from: documentStart, to: fragment.rangeInElement.location)
-        return fragmentOffset + line.characterRange.location + line.characterIndex(for: pointInLine)
+    static func isWordCharacter(_ character: unichar) -> Bool {
+        guard let scalar = Unicode.Scalar(character) else { return false }
+        return scalar == "_" || scalar == "$" || CharacterSet.alphanumerics.contains(scalar)
+    }
+
+    // MARK: Completion trigger and keys
+
+    /// ⌘Space toggles completions. Spotlight owns that shortcut system-wide and
+    /// may swallow it before the app sees it; Ctrl+Space stays free for input sources.
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.keyCode == 49 /* space */,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command {
+            onCompletionTrigger?()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func moveUp(_ sender: Any?) {
+        if onCompletionCommand?(.moveUp) == true { return }
+        super.moveUp(sender)
+    }
+
+    override func moveDown(_ sender: Any?) {
+        if onCompletionCommand?(.moveDown) == true { return }
+        super.moveDown(sender)
+    }
+
+    override func cancelOperation(_ sender: Any?) {
+        if onCompletionCommand?(.cancel) == true { return }
+        super.cancelOperation(sender)
+    }
+
+    override func deleteBackward(_ sender: Any?) {
+        // The panel closes on deletion; the handler returns false so the
+        // deletion itself still runs.
+        _ = onCompletionCommand?(.delete)
+        super.deleteBackward(sender)
+    }
+
+    /// Maps a click in view coordinates to the nearest UTF-16 insertion offset.
+    func utf16Offset(atClick point: NSPoint) -> Int? {
+        let offset = characterIndexForInsertion(at: point)
+        return offset == NSNotFound ? nil : offset
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -190,7 +262,7 @@ final class EditorTextView: NSTextView {
         }
     }
 
-    /// Draw the cue instead of mutating text storage, so hover never changes document attributes.
+    /// Draw the cue instead of mutating text storage or changing document attributes.
     private func drawCommandHover(range: NSRange, in dirtyRect: NSRect) {
         guard let layoutManager = textLayoutManager,
               let contentManager = layoutManager.textContentManager,
@@ -379,5 +451,27 @@ final class EditorTextView: NSTextView {
         let width = [2, 4, 8].max { steps[$0, default: 0] < steps[$1, default: 0] }
             .flatMap { steps[$0, default: 0] > 0 ? $0 : nil } ?? settings.tabWidth
         return Indentation(usesTabs: false, width: width)
+    }
+}
+
+extension NSTextView {
+    /// The view-coordinate rect anchoring `range` (TextKit 2 segments); nil
+    /// when the range has no laid-out geometry.
+    func anchorRect(forCharacterRange range: NSRange) -> NSRect? {
+        guard let layoutManager = textLayoutManager,
+              let contentManager = layoutManager.textContentManager else { return nil }
+        let documentStart = layoutManager.documentRange.location
+        guard let start = contentManager.location(documentStart, offsetBy: range.location),
+              let end = contentManager.location(start, offsetBy: max(range.length, 1)),
+              let textRange = NSTextRange(location: start, end: end) else { return nil }
+        layoutManager.ensureLayout(for: textRange)
+        var rect: NSRect?
+        layoutManager.enumerateTextSegments(
+            in: textRange, type: .standard, options: [.rangeNotRequired]
+        ) { _, segmentFrame, _, _ in
+            rect = segmentFrame
+            return false
+        }
+        return rect
     }
 }

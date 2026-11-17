@@ -21,8 +21,14 @@ struct EditorArea: View {
                 }
                 EditorTabBar(workspace: workspace)
                 Spacer(minLength: 0)
-                if let buffer = workspace.activeBuffer, let format = buffer.previewFormat {
-                    PreviewModeToggle(buffer: buffer, format: format)
+                if let buffer = workspace.activeBuffer, buffer.textController != nil {
+                    HStack(spacing: 2) {
+                        GitDiffButton(buffer: buffer, workspace: workspace)
+                            .id(ObjectIdentifier(buffer))
+                        if let format = buffer.previewFormat {
+                            PreviewModeToggle(buffer: buffer, format: format)
+                        }
+                    }
                 }
                 // Last, so it stays in place whatever the tab has beside it.
                 TerminalToggleButton(workspace: workspace)
@@ -628,17 +634,21 @@ private struct BufferView: View {
     var body: some View {
         switch buffer.content {
         case .text(let controller):
-            if buffer.isShowingPreview, let preview = buffer.preview {
+            if buffer.isShowingGitDiff, let diff = buffer.gitDiffController {
+                // Source and the patch against HEAD, side by side in one card: the
+                // text stays editable — with its status bar — while the patch is a
+                // read-only `.diff` pane that never takes the insertion point.
+                HStack(spacing: 0) {
+                    sourcePane(buffer: buffer, controller: controller)
+                        .frame(maxWidth: .infinity)
+                    Divider()
+                    TextViewHost(controller: diff, takesFocusOnShow: false)
+                        .frame(maxWidth: .infinity)
+                }
+            } else if buffer.isShowingPreview, let preview = buffer.preview {
                 PreviewHost(preview: preview)
             } else {
-                // The status bar floats over the text's bottom corner rather than
-                // taking a strip of the card, left of the minimap when it's shown.
-                TextViewHost(controller: controller)
-                    .overlay(alignment: .bottomTrailing) {
-                        StatusBar(buffer: buffer, workspace: workspace)
-                            .padding(4)
-                            .padding(.trailing, EditorSettings.shared.showsMinimap ? MinimapView.width : 0)
-                    }
+                sourcePane(buffer: buffer, controller: controller)
             }
         case .image(let file):
             ImagePreview(file: file)
@@ -666,6 +676,17 @@ private struct BufferView: View {
             )
         }
     }
+
+    /// The editable text, with the status bar floating over its bottom corner rather
+    /// than taking a strip of the card, left of the minimap when it's shown.
+    private func sourcePane(buffer: EditorBuffer, controller: TextController) -> some View {
+        TextViewHost(controller: controller)
+            .overlay(alignment: .bottomTrailing) {
+                StatusBar(buffer: buffer, workspace: workspace)
+                    .padding(4)
+                    .padding(.trailing, EditorSettings.shared.showsMinimap ? MinimapView.width : 0)
+            }
+    }
 }
 
 // MARK: - Status bar
@@ -684,6 +705,7 @@ private struct StatusBar: View {
             }
             .buttonStyle(.plain)
             .help("Go to Line (⌘L)")
+            diagnosticCounts
             Text(buffer.indentation.usesTabs ? "Tabs" : "Spaces: \(buffer.indentation.width)")
             Text(buffer.encodingName)
             Text(buffer.lineEndingName)
@@ -697,6 +719,40 @@ private struct StatusBar: View {
         .padding(.vertical, 4)
         .glassSurface(in: .capsule)
         .fixedSize()
+    }
+
+    @ViewBuilder
+    @State private var showsProblems = false
+
+    private var diagnosticCounts: some View {
+        let counts = workspace.lsp?.diagnosticCounts(for: buffer.url) ?? .zero
+        let hasProblems = counts.errors > 0 || counts.warnings > 0
+        let description = [
+            counts.errors > 0 ? (counts.errors == 1 ? "1 error" : "\(counts.errors) errors") : nil,
+            counts.warnings > 0 ? (counts.warnings == 1 ? "1 warning" : "\(counts.warnings) warnings") : nil,
+        ].compactMap { $0 }.joined(separator: ", ")
+        return Button { showsProblems = true } label: {
+            HStack(spacing: 6) {
+                if counts.errors > 0 {
+                    Label("\(counts.errors)", systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                }
+                if counts.warnings > 0 {
+                    Label("\(counts.warnings)", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .help(description.isEmpty ? "No Problems" : description)
+        .accessibilityLabel("Show Problems: \(description)")
+        .accessibilityHint("Opens diagnostics for the current file")
+        .popover(isPresented: $showsProblems, arrowEdge: .bottom) {
+            ProblemsPopover(workspace: workspace, buffer: buffer)
+        }
+        .opacity(hasProblems ? 1 : 0)
+        .disabled(!hasProblems)
     }
 
     @ViewBuilder
@@ -761,7 +817,8 @@ private struct PreviewModeToggle: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            option("doc.plaintext", help: "Show \(format.sourceName) (⇧⌘V)", isOn: !buffer.isShowingPreview) {
+            option("doc.plaintext", help: "Show \(format.sourceName) (⇧⌘V)",
+                   isOn: !buffer.isShowingPreview && !buffer.isShowingGitDiff) {
                 buffer.setShowingPreview(false)
             }
             option("eye", help: "Show Preview (⇧⌘V)", isOn: buffer.isShowingPreview) {

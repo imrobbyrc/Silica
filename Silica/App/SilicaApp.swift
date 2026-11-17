@@ -18,7 +18,10 @@ struct SilicaApp: App {
         // Starts Sparkle, which schedules the daily update check.
         _ = AppUpdater.shared
         #if DEBUG
-        if ProcessInfo.processInfo.environment["SILICA_LSP_SELFTEST"] == "1" {
+        if ProcessInfo.processInfo.environment["SILICA_GIT_DIFF_SELFTEST"] == "1" {
+            // scripts/test-git-diff.sh: exercises Git diff detection and patch generation.
+            GitDiffSelfTest.run()
+        } else if ProcessInfo.processInfo.environment["SILICA_LSP_SELFTEST"] == "1" {
             // scripts/test-lsp-integration.sh: drives the coordinator end-to-end
             // against a fake language server, then exits.
             LSPSelfTest.run()

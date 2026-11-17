@@ -12,6 +12,7 @@ extension EditorTextView {
     /// (or `:` in Python and YAML), and puts a closing bracket right after the cursor
     /// on its own line.
     override func insertNewline(_ sender: Any?) {
+        if onCompletionCommand?(.accept) == true { return }
         let text = string as NSString
         let selection = selectedRange()
         let lineStart = text.lineRange(for: NSRange(location: selection.location, length: 0)).location
@@ -49,6 +50,7 @@ extension EditorTextView {
     /// Indents the selected lines when the selection spans lines; otherwise inserts a
     /// tab or, in space-indented files, spaces up to the next indent stop.
     override func insertTab(_ sender: Any?) {
+        if onCompletionCommand?(.accept) == true { return }
         let selection = selectedRange()
         let text = string as NSString
         if selection.length > 0, text.substring(with: selection).contains(where: \.isNewline) {

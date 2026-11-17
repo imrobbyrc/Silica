@@ -657,6 +657,7 @@ private struct FileNodeRow: View {
             // Dotfiles and gitignored items fade back but stay clickable.
             .opacity(node.isDimmed && !isRenaming ? 0.5 : 1)
             Spacer(minLength: 0)
+            gitStatusMarker
             if workspace.buffers[node.url]?.isDirty == true {
                 Circle()
                     .fill(.primary.opacity(0.6))
@@ -669,6 +670,33 @@ private struct FileNodeRow: View {
         .tag(node.url)
         .listRowBackground(SelectionHighlight(isSelected: workspace.selection == node.url))
         .contextMenu { FileNodeMenu(node: node, workspace: workspace) }
+    }
+
+    @ViewBuilder
+    private var gitStatusMarker: some View {
+        if node.isDirectory {
+            if workspace.gitStatusSnapshot.hasChanges(in: node.relativePath) {
+                Circle()
+                    .fill(Color.accentColor)
+                    .frame(width: 5, height: 5)
+                    .accessibilityLabel("Folder contains Git changes")
+                    .help("Folder contains Git changes")
+            }
+        } else if let status = workspace.gitStatusSnapshot.status(for: node.relativePath) {
+            Text(status.marker)
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundStyle(statusColor(for: status))
+                .frame(minWidth: 12, alignment: .trailing)
+                .accessibilityLabel(status.accessibilityLabel)
+                .help(status.accessibilityLabel)
+        }
+    }
+
+    private func statusColor(for status: GitFileStatus) -> Color {
+        switch status {
+        case .modified: .orange
+        case .added, .untracked: .green
+        }
     }
 
     /// A smaller chevron than the system outline's; files get the same width of space.

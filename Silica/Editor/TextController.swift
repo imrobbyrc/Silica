@@ -82,6 +82,12 @@ final class TextController: NSObject, NSTextViewDelegate {
         textView.commandLinkRangeAt = { [weak self] offset in
             self?.highlighter?.linkRange(at: offset)
         }
+        textView.onCompletionTrigger = { [weak self] in
+            self?.showCompletions()
+        }
+        textView.onCompletionCommand = { [weak self] command in
+            self?.handleCompletionCommand(command) ?? false
+        }
         applyWrapping()
 
         NotificationCenter.default.addObserver(
@@ -105,6 +111,19 @@ final class TextController: NSObject, NSTextViewDelegate {
             self, selector: #selector(updateGutterMask),
             name: NSView.boundsDidChangeNotification, object: scrollView.contentView
         )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(syncPeerScroll),
+            name: NSView.boundsDidChangeNotification, object: scrollView.contentView
+        )
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(dismissCompletionOnScroll),
+            name: NSView.boundsDidChangeNotification, object: scrollView.contentView
+        )
+    }
+
+    /// Scrolling the text invalidates the completion word range.
+    @objc private func dismissCompletionOnScroll() {
+        completionPanel.close()
     }
 
     /// `\r\n` if the file's first line break is one, else `\n` (or `\r` for old Mac files).
@@ -193,14 +212,20 @@ final class TextController: NSObject, NSTextViewDelegate {
 
     /// Called when the editor appears in the card.
     func didAppear() {
+        hasAppeared = true
         guard let line = pendingTopLine else { return }
         pendingTopLine = nil
+        // Taking the place computed from the linked pane's side must not chase it.
+        isScrollingFromPeer = true
+        defer { isScrollingFromPeer = false }
         scroll(toLine: line)
     }
 
     /// Called just before another tab's editor replaces this one.
     func willDisappear() {
         lastTopLine = topVisibleLine()
+        hasAppeared = false
+        completionPanel.close()
     }
 
     /// The top line to save, whether or not the editor is on screen.
@@ -212,6 +237,70 @@ final class TextController: NSObject, NSTextViewDelegate {
 
     var cursorLocation: Int {
         textView.selectedRange().location
+    }
+
+    // MARK: Completion
+
+    /// Asks the coordinator for completions at a UTF-16 offset; the workspace
+    /// wires this on buffer open. Empty result = no server or no candidates.
+    var completionProvider: ((Int) async -> [LSPCompletionItem]?)?
+
+    private lazy var completionPanel = CompletionPanel { [weak self] item in
+        self?.acceptCompletion(item)
+    }
+
+    /// The word range the open panel's items replace; cleared by any edit.
+    private var completionInsertRange: NSRange?
+    private var completionTask: Task<Void, Never>?
+
+    /// ⌘Space: requests completions at the caret, or closes the open panel.
+    func showCompletions() {
+        if completionPanel.isVisible {
+            completionPanel.close()
+            completionInsertRange = nil
+            return
+        }
+        guard let completionProvider, let buffer, !buffer.isUntitled else { return }
+        let selection = textView.selectedRange()
+        guard let range = textView.wordRange(at: selection.location) else { return }
+        let text = textView.string
+        let revision = buffer.textRevision
+        completionTask?.cancel()
+        completionInsertRange = nil
+        completionTask = Task { [weak self] in
+            let items = await completionProvider(selection.location)
+            guard let self, !Task.isCancelled else { return }
+            // Drop replies if either document or caret moved while waiting.
+            guard self.textView.string == text,
+                  self.buffer?.textRevision == revision,
+                  self.textView.selectedRange() == selection else { return }
+            guard let items, !items.isEmpty else { return }
+            self.completionInsertRange = range
+            self.completionPanel.show(items: items, wordRange: range, in: self.textView)
+        }
+    }
+
+    private func acceptCompletion(_ item: LSPCompletionItem) {
+        completionPanel.close()
+        guard let range = completionInsertRange else { return }
+        completionInsertRange = nil
+        textView.applyEdit(in: range, with: item.insertion, actionName: "Complete")
+        let caret = range.location + (item.insertion as NSString).length
+        textView.setSelectedRange(NSRange(location: caret, length: 0))
+    }
+
+    /// Consumes an editing command while the panel is open; `false` lets the
+    /// text view proceed (e.g. backspace still deletes, it just closes the panel).
+    private func handleCompletionCommand(_ command: EditorTextView.EditingCommand) -> Bool {
+        guard completionPanel.isVisible else { return false }
+        switch command {
+        case .moveUp: completionPanel.moveSelection(-1)
+        case .moveDown: completionPanel.moveSelection(1)
+        case .accept: completionPanel.acceptSelected()
+        case .cancel: completionPanel.close()
+        case .delete: completionPanel.close()
+        }
+        return command != .delete
     }
 
     // MARK: Navigation
@@ -289,6 +378,31 @@ final class TextController: NSObject, NSTextViewDelegate {
 
     private func focus() {
         textView.window?.makeFirstResponder(textView)
+    }
+
+    // MARK: Linked scrolling (source ↔ git diff)
+
+    /// The pane shown beside this one (the source and its Git diff); the two
+    /// follow each other's top line through the shown patch's line map.
+    weak var scrollPeer: TextController?
+    /// Maps this pane's top visible line to the peer's top line.
+    var peerTopLine: ((Int) -> Int)?
+    /// True while this pane's scroll comes from its peer or from taking its
+    /// peer's place on appear, so the move doesn't scroll the peer back.
+    var isScrollingFromPeer = false
+    /// From the first appearance until the pane leaves the screen; the bounds
+    /// changes of mounting (tiling, a resize before layout settles) drive no peer.
+    private var hasAppeared = false
+
+    /// Follows the linked pane: when it scrolls, this pane scrolls to the line
+    /// the patch's map gives, without echoing back into it.
+    @objc private func syncPeerScroll() {
+        guard let peer = scrollPeer, let peerMap = peerTopLine, !isScrollingFromPeer,
+              hasAppeared, scrollView.window != nil, peer.scrollView.window != nil else { return }
+        let target = peerMap(topVisibleLine())
+        peer.isScrollingFromPeer = true
+        peer.scroll(toLine: target)
+        peer.isScrollingFromPeer = false
     }
 
     // MARK: Status
@@ -380,6 +494,7 @@ final class TextController: NSObject, NSTextViewDelegate {
     var textDidChangeHandler: (() -> Void)?
 
     func textDidChange(_ notification: Notification) {
+        completionPanel.close()
         highlighter?.textDidChange()
         lineNumbers?.textDidChange()
         if !isReplacingText, buffer?.isDirty == false {
@@ -422,6 +537,11 @@ final class TextController: NSObject, NSTextViewDelegate {
     }
 
     func textViewDidChangeSelection(_ notification: Notification) {
+        // The caret moved without going through the panel's own key handling.
+        completionTask?.cancel()
+        completionTask = nil
+        completionInsertRange = nil
+        if completionPanel.isVisible { completionPanel.close() }
         lineNumbers?.setNeedsRedraw()
         scheduleStatusUpdate()
     }
@@ -450,7 +570,7 @@ final class TextController: NSObject, NSTextViewDelegate {
     }
 
     /// Scrolls so `line` (1-based) is at the top.
-    func scroll(toLine line: Int) {
+    func scroll(toLine line: Int, placingCursor: Bool = false) {
         let text = textView.string as NSString
         var offset = 0
         var current = 1
@@ -458,6 +578,7 @@ final class TextController: NSObject, NSTextViewDelegate {
             offset = NSMaxRange(text.lineRange(for: NSRange(location: offset, length: 0)))
             current += 1
         }
+        if placingCursor { textView.setSelectedRange(NSRange(location: offset, length: 0)) }
         guard let layoutManager = textView.textLayoutManager,
               let contentManager = layoutManager.textContentManager,
               let location = contentManager.location(layoutManager.documentRange.location, offsetBy: offset),
@@ -466,7 +587,7 @@ final class TextController: NSObject, NSTextViewDelegate {
         if let fragment = layoutManager.textLayoutFragment(for: location) {
             // Fragment frames don't include the text container's inset; the view does.
             // Matches `topVisibleLine()`, so saving and restoring doesn't drift.
-            textView.scroll(NSPoint(x: 0, y: fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y))
+            textView.scroll(NSPoint(x: scrollView.contentView.bounds.minX, y: fragment.layoutFragmentFrame.minY + textView.textContainerOrigin.y))
         }
     }
 }
@@ -474,19 +595,22 @@ final class TextController: NSObject, NSTextViewDelegate {
 /// Hosts whichever buffer's scroll view is active.
 struct TextViewHost: NSViewRepresentable {
     let controller: TextController
+    /// False for a read-only pane shown beside the source (the Git diff): mounting
+    /// it must not pull the insertion point out of the text being edited.
+    var takesFocusOnShow = true
 
     func makeNSView(context: Context) -> HostView {
         HostView()
     }
 
     func updateNSView(_ nsView: HostView, context: Context) {
-        nsView.show(controller)
+        nsView.show(controller, takesFocus: takesFocusOnShow)
     }
 
     final class HostView: NSView {
         private weak var current: TextController?
 
-        func show(_ controller: TextController) {
+        func show(_ controller: TextController, takesFocus: Bool) {
             guard current !== controller else { return }
             current?.willDisappear()
             current?.view.removeFromSuperview()
@@ -496,7 +620,9 @@ struct TextViewHost: NSViewRepresentable {
             addSubview(editorView)
             current = controller
             DispatchQueue.main.async { [weak self] in
-                self?.window?.makeFirstResponder(controller.textView)
+                if takesFocus {
+                    self?.window?.makeFirstResponder(controller.textView)
+                }
                 controller.didAppear()
             }
         }
